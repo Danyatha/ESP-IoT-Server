@@ -122,7 +122,7 @@ export default function IoTDashboard() {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const res = await fetch("http://localhost:3000/api/latest");
+                const res = await fetch("http://202.10.40.22:3000//api/latest");
                 const data = await res.json();
 
                 if (data) {
