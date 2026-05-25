@@ -4,6 +4,7 @@ import { Thermometer, Droplets, Activity, Beaker, FlaskConical, Waves, Wind, Eye
 const MAX_POINTS = 60;
 const AGE_DELAYED = 60;
 const AGE_OFFLINE = 120;
+const PUMP_AGE_OFFLINE = 20;
 
 function ECGChart({ data, color, label, unit, min, max }) {
     const width = 600, height = 120;
@@ -236,26 +237,25 @@ export default function IoTDashboard() {
     const gasStyle  = gasStatusStyle(gasData?.status);
     const turbStyle = turbidityStatusStyle(latestData?.turbidity ?? null);
 
-    const pumpOn    = pumpStatus === 1;
-    const pumpColor = pumpStatus === null ? '#555' : pumpOn ? '#00ff82' : '#ff4444';
-    const pumpLabel = pumpStatus === null ? 'NO DATA' : pumpOn ? 'ON' : 'OFF';
-    const pumpBorderColor = pumpStatus === null
+    // Pump ON/OFF ditentukan dari device_age, bukan dari nilai pumping field.
+    // ESP hanya kirim 1 selama hidup; jika tidak kirim data > PUMP_AGE_OFFLINE detik = OFF.
+    const pumpAge        = deviceNames.pump ? (deviceAge[deviceNames.pump] ?? null) : null;
+    const pumpNoData     = pumpAge === null;
+    const pumpOn         = !pumpNoData && pumpAge < PUMP_AGE_OFFLINE;
+    const pumpColor      = pumpNoData ? '#555' : pumpOn ? '#00ff82' : '#ff4444';
+    const pumpLabel      = pumpNoData ? 'NO DATA' : pumpOn ? 'ON' : 'OFF';
+    const pumpBorderColor = pumpNoData
         ? 'rgba(255,255,255,0.1)'
-        : pumpOn  ? 'rgba(0,255,130,0.25)'
-                  : 'rgba(255,68,68,0.25)';
-    const pumpBg = pumpStatus === null
+        : pumpOn ? 'rgba(0,255,130,0.25)'
+                 : 'rgba(255,68,68,0.25)';
+    const pumpBg = pumpNoData
         ? 'rgba(255,255,255,0.02)'
-        : pumpOn  ? 'rgba(0,255,130,0.04)'
-                  : 'rgba(255,68,68,0.04)';
+        : pumpOn ? 'rgba(0,255,130,0.04)'
+                 : 'rgba(255,68,68,0.04)';
 
     const staleTag = (
         <span style={{ fontSize: '0.55rem', padding: '2px 6px', borderRadius: 3, border: '1px solid rgba(255,68,68,0.4)', color: '#ff4444', letterSpacing: '0.1em' }}>STALE</span>
     );
-
-    // Count ON/OFF in history
-    const pumpOnCount  = pumpHistory.filter(v => v === 1).length;
-    const pumpOffCount = pumpHistory.filter(v => v === 0).length;
-    const pumpOnPct    = pumpHistory.length > 0 ? Math.round((pumpOnCount / pumpHistory.length) * 100) : null;
 
     return (
         <div style={{ minHeight: '100vh', background: '#050e0b', color: '#d0ffe8', fontFamily: '"Courier New", monospace' }}>
@@ -444,26 +444,24 @@ export default function IoTDashboard() {
                     </div>
 
                     {/* Stats row */}
-                    {pumpHistory.length > 0 && (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
-                            {[
-                                { label: 'Sampel',    value: pumpHistory.length, unit: 'data' },
-                                { label: 'ON count',  value: pumpOnCount,        unit: 'kali' },
-                                { label: 'Aktif',     value: pumpOnPct != null ? `${pumpOnPct}` : '--', unit: '%' },
-                            ].map(({ label, value, unit }) => (
-                                <div key={label} style={{
-                                    background: `rgba(${pumpOn ? '0,255,130' : '255,68,68'},0.05)`,
-                                    border: `1px solid ${pumpBorderColor}`,
-                                    borderRadius: 6, padding: '10px 14px',
-                                }}>
-                                    <div style={{ fontSize: '0.55rem', color: `${pumpColor}88`, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                                    <div style={{ fontSize: '1.4rem', fontWeight: 700, color: pumpColor, fontFamily: 'monospace', lineHeight: 1 }}>
-                                        {value}<span style={{ fontSize: '0.75rem', opacity: 0.55, marginLeft: 2 }}>{unit}</span>
-                                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
+                        {[
+                            { label: 'Status',    value: pumpLabel,                                              unit: '' },
+                            { label: 'Last Seen', value: pumpAge != null ? `${pumpAge}` : '--',                  unit: 's ago' },
+                            { label: 'Timeout',   value: `${PUMP_AGE_OFFLINE}`,                                  unit: 's' },
+                        ].map(({ label, value, unit }) => (
+                            <div key={label} style={{
+                                background: `rgba(${pumpOn ? '0,255,130' : pumpNoData ? '100,100,100' : '255,68,68'},0.05)`,
+                                border: `1px solid ${pumpBorderColor}`,
+                                borderRadius: 6, padding: '10px 14px',
+                            }}>
+                                <div style={{ fontSize: '0.55rem', color: `${pumpColor}88`, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                                <div style={{ fontSize: '1.4rem', fontWeight: 700, color: pumpColor, fontFamily: 'monospace', lineHeight: 1 }}>
+                                    {value}<span style={{ fontSize: '0.75rem', opacity: 0.55, marginLeft: 2 }}>{unit}</span>
                                 </div>
-                            ))}
-                        </div>
-                    )}
+                            </div>
+                        ))}
+                    </div>
 
                     {/* Bar timeline */}
                     <div style={{ fontSize: '0.55rem', color: `${pumpColor}66`, letterSpacing: '0.15em', marginBottom: 4 }}>
