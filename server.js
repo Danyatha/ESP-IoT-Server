@@ -37,27 +37,42 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
             turbidity REAL,
             tss REAL,
             clarity REAL,
+            pumping INTEGER,
             device TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
+        )`, (err) => {
+            if (err) {
+                console.error('❌ Error create table:', err);
+            } else {
+                // Migrasi: tambah kolom pumping jika belum ada (untuk database lama)
+                db.run(`ALTER TABLE sensor_data ADD COLUMN pumping INTEGER`, (alterErr) => {
+                    if (alterErr && !alterErr.message.includes('duplicate column')) {
+                        console.error('❌ Error alter table:', alterErr);
+                    } else if (!alterErr) {
+                        console.log('✅ Kolom pumping berhasil ditambahkan');
+                    }
+                });
+            }
+        });
     }
 });
 
 // ===== WHITELIST FIELD PER DEVICE =====
-// Setiap device hanya boleh mengisi field miliknya sendiri.
-// Field lain yang ikut terkirim akan diabaikan sebelum masuk database.
 const DEVICE_FIELDS = {
-    'esp-main': ['temperature', 'humidity'],
-    'esp-tds': ['tds'],
-    'esp-ph': ['ph', 'alk', 'temp'],
-    'esp-gas': ['adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio', 'status', 'gas_hint'],
+    'esp-main':      ['temperature', 'humidity'],
+    'esp-tds':       ['tds'],
+    'esp-ph':        ['ph', 'alk', 'temp'],
+    'esp-gas':       ['adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio', 'status', 'gas_hint'],
     'esp-turbidity': ['turbidity', 'tss', 'clarity', 'voltage'],
+    'esp-pump':      ['pumping'],
 };
 
 // Semua kolom yang ada di tabel (selain id, device, timestamp)
-const ALL_FIELDS = ['temperature', 'humidity', 'tds', 'ph', 'alk', 'temp',
+const ALL_FIELDS = [
+    'temperature', 'humidity', 'tds', 'ph', 'alk', 'temp',
     'adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio',
-    'status', 'gas_hint', 'turbidity', 'tss', 'clarity'];
+    'status', 'gas_hint', 'turbidity', 'tss', 'clarity', 'pumping'
+];
 
 // ===== HELPER =====
 function getLatestFromDevice(device, cb) {
@@ -85,10 +100,12 @@ app.post('/data', (req, res) => {
 
     const allowedFields = DEVICE_FIELDS[device];
     if (!allowedFields) {
-        return res.status(400).json({ error: `Device "${device}" tidak dikenal. Daftar device valid: ${Object.keys(DEVICE_FIELDS).join(', ')}` });
+        return res.status(400).json({
+            error: `Device "${device}" tidak dikenal. Daftar device valid: ${Object.keys(DEVICE_FIELDS).join(', ')}`
+        });
     }
 
-    // Ambil hanya field yang diizinkan untuk device ini, buang sisanya
+    // Ambil hanya field yang diizinkan untuk device ini
     const filtered = {};
     for (const field of allowedFields) {
         filtered[field] = req.body[field] ?? null;
@@ -97,13 +114,22 @@ app.post('/data', (req, res) => {
     // Validasi minimal satu field terisi
     const hasData = Object.values(filtered).some(v => v != null);
     if (!hasData) {
-        return res.status(400).json({ error: `Tidak ada field valid untuk device "${device}". Field yang diizinkan: ${allowedFields.join(', ')}` });
+        return res.status(400).json({
+            error: `Tidak ada field valid untuk device "${device}". Field yang diizinkan: ${allowedFields.join(', ')}`
+        });
     }
 
-    // Build nilai untuk INSERT — field yang tidak dimiliki device ini selalu NULL
+    // Validasi pumping hanya boleh 0 atau 1
+    if (device === 'esp-pump' && filtered.pumping != null) {
+        const p = Number(filtered.pumping);
+        if (p !== 0 && p !== 1) {
+            return res.status(400).json({ error: 'Field "pumping" hanya boleh bernilai 0 atau 1' });
+        }
+        filtered.pumping = p;
+    }
+
     const values = ALL_FIELDS.map(f => filtered[f] ?? null);
 
-    // Console log hanya field yang terisi
     const logStr = Object.entries(filtered)
         .filter(([_, v]) => v != null)
         .map(([k, v]) => `${k}:${v}`)
@@ -124,7 +150,6 @@ app.post('/data', (req, res) => {
 });
 
 // 2. Get latest data
-// Tiap device diambil dari row terbaru milik device itu sendiri (bukan field IS NOT NULL global)
 app.get('/api/latest', (req, res) => {
     getLatestFromDevice('esp-main', (e1, main) => {
         if (e1) return res.status(500).json({ error: e1.message });
@@ -141,55 +166,56 @@ app.get('/api/latest', (req, res) => {
                     getLatestFromDevice('esp-turbidity', (e5, turb) => {
                         if (e5) return res.status(500).json({ error: e5.message });
 
-                        const deviceAge = {
-                            'esp-main': ageSeconds(main),
-                            'esp-tds': ageSeconds(tdsRow),
-                            'esp-ph': ageSeconds(ph),
-                            'esp-gas': ageSeconds(gas),
-                            'esp-turbidity': ageSeconds(turb),
-                        };
+                        getLatestFromDevice('esp-pump', (e6, pump) => {
+                            if (e6) return res.status(500).json({ error: e6.message });
 
-                        res.json({
-                            // esp-main
-                            temperature: main?.temperature ?? null,
-                            humidity: main?.humidity ?? null,
+                            const deviceAge = {
+                                'esp-main':      ageSeconds(main),
+                                'esp-tds':       ageSeconds(tdsRow),
+                                'esp-ph':        ageSeconds(ph),
+                                'esp-gas':       ageSeconds(gas),
+                                'esp-turbidity': ageSeconds(turb),
+                                'esp-pump':      ageSeconds(pump),
+                            };
 
-                            // esp-tds
-                            tds: tdsRow?.tds ?? null,
+                            res.json({
+                                temperature: main?.temperature ?? null,
+                                humidity:    main?.humidity ?? null,
+                                tds:         tdsRow?.tds ?? null,
+                                ph:          ph?.ph ?? null,
+                                alk:         ph?.alk ?? null,
+                                temp:        ph?.temp ?? null,
 
-                            // esp-ph
-                            ph: ph?.ph ?? null,
-                            alk: ph?.alk ?? null,
-                            temp: ph?.temp ?? null,
+                                gas: gas ? {
+                                    adc_raw:     gas.adc_raw,
+                                    voltage:     gas.voltage,
+                                    baseline_v:  gas.baseline_v,
+                                    rs_ro_ratio: gas.rs_ro_ratio,
+                                    status:      gas.status,
+                                    gas_hint:    gas.gas_hint,
+                                } : null,
 
-                            // esp-gas
-                            gas: gas ? {
-                                adc_raw: gas.adc_raw,
-                                voltage: gas.voltage,
-                                baseline_v: gas.baseline_v,
-                                rs_ro_ratio: gas.rs_ro_ratio,
-                                status: gas.status,
-                                gas_hint: gas.gas_hint,
-                            } : null,
+                                turbidity: turb ? {
+                                    turbidity: turb.turbidity,
+                                    tss:       turb.tss,
+                                    clarity:   turb.clarity,
+                                    voltage:   turb.voltage,
+                                } : null,
 
-                            // esp-turbidity
-                            turbidity: turb ? {
-                                turbidity: turb.turbidity,
-                                tss: turb.tss,
-                                clarity: turb.clarity,
-                                voltage: turb.voltage,
-                            } : null,
+                                pumping: pump?.pumping ?? null,
 
-                            timestamp: main?.timestamp ?? tdsRow?.timestamp ?? ph?.timestamp ?? gas?.timestamp ?? turb?.timestamp ?? null,
+                                timestamp: main?.timestamp ?? tdsRow?.timestamp ?? ph?.timestamp ?? gas?.timestamp ?? turb?.timestamp ?? pump?.timestamp ?? null,
 
-                            device_age: deviceAge,
-                            device_names: {
-                                env: main ? 'esp-main' : null,
-                                tds: tdsRow ? 'esp-tds' : null,
-                                water: ph ? 'esp-ph' : null,
-                                gas: gas ? 'esp-gas' : null,
-                                turbidity: turb ? 'esp-turbidity' : null,
-                            }
+                                device_age: deviceAge,
+                                device_names: {
+                                    env:       main      ? 'esp-main'      : null,
+                                    tds:       tdsRow    ? 'esp-tds'       : null,
+                                    water:     ph        ? 'esp-ph'        : null,
+                                    gas:       gas       ? 'esp-gas'       : null,
+                                    turbidity: turb      ? 'esp-turbidity' : null,
+                                    pump:      pump      ? 'esp-pump'      : null,
+                                }
+                            });
                         });
                     });
                 });
@@ -217,9 +243,9 @@ app.get('/api/debug', (req, res) => {
                     const age = Math.floor((Date.now() - new Date(row.timestamp + 'Z').getTime()) / 1000);
                     results[device] = {
                         status: age < 30 ? 'ONLINE' : age < 120 ? 'DELAYED' : 'OFFLINE',
-                        last_seen: row.timestamp,
+                        last_seen:   row.timestamp,
                         age_seconds: age,
-                        total_rows: row.total_rows,
+                        total_rows:  row.total_rows,
                     };
                 }
                 done++;
@@ -248,12 +274,17 @@ app.get('/api/history', (req, res) => {
                     db.all(`SELECT turbidity, tss, clarity, voltage, timestamp FROM sensor_data WHERE device = 'esp-turbidity' ORDER BY timestamp DESC LIMIT ?`, [limit], (e5, turbRows) => {
                         if (e5) return res.status(500).json({ error: e5.message });
 
-                        res.json({
-                            environment: mainRows,
-                            tds: tdsRows,
-                            water: phRows,
-                            gas: gasRows,
-                            turbidity: turbRows,
+                        db.all(`SELECT pumping, timestamp FROM sensor_data WHERE device = 'esp-pump' ORDER BY timestamp DESC LIMIT ?`, [limit], (e6, pumpRows) => {
+                            if (e6) return res.status(500).json({ error: e6.message });
+
+                            res.json({
+                                environment: mainRows,
+                                tds:         tdsRows,
+                                water:       phRows,
+                                gas:         gasRows,
+                                turbidity:   turbRows,
+                                pump:        pumpRows,
+                            });
                         });
                     });
                 });
@@ -276,10 +307,14 @@ app.delete('/api/cleanup', (req, res) => {
     if (isNaN(daysToKeep) || daysToKeep < 1) {
         return res.status(400).json({ error: 'Parameter days tidak valid' });
     }
-    db.run(`DELETE FROM sensor_data WHERE timestamp < datetime('now', ?)`, [`-${daysToKeep} days`], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, deleted: this.changes, message: `Deleted data older than ${daysToKeep} days` });
-    });
+    db.run(
+        `DELETE FROM sensor_data WHERE timestamp < datetime('now', ?)`,
+        [`-${daysToKeep} days`],
+        function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true, deleted: this.changes, message: `Deleted data older than ${daysToKeep} days` });
+        }
+    );
 });
 
 // Server Info
@@ -300,12 +335,13 @@ app.get('/', (req, res) => {
 
       <h2>📡 POST Endpoint</h2>
       <div class="endpoint">
-        <strong>POST /data</strong> — Kirim data sensor. Field <b>device</b> WAJIB. Setiap device hanya menyimpan field miliknya.<br><br>
+        <strong>POST /data</strong> — Kirim data sensor. Field <b>device</b> WAJIB.<br><br>
         <b>esp-main:</b>      <code>{ "temperature": 25.5, "humidity": 65.2, "device": "esp-main" }</code><br><br>
         <b>esp-tds:</b>       <code>{ "tds": 120.5, "device": "esp-tds" }</code><br><br>
         <b>esp-ph:</b>        <code>{ "ph": 7.12, "alk": 150.0, "temp": 28.5, "device": "esp-ph" }</code><br><br>
         <b>esp-gas:</b>       <code>{ "adc_raw": 512, "voltage": 2.31, "baseline_v": 1.95, "rs_ro_ratio": 1.18, "status": "WARNING", "gas_hint": "CO", "device": "esp-gas" }</code><br><br>
-        <b>esp-turbidity:</b> <code>{ "turbidity": 3.25, "tss": 4.23, "clarity": 96.7, "voltage": 1.96, "device": "esp-turbidity" }</code>
+        <b>esp-turbidity:</b> <code>{ "turbidity": 3.25, "tss": 4.23, "clarity": 96.7, "voltage": 1.96, "device": "esp-turbidity" }</code><br><br>
+        <b>esp-pump:</b>      <code>{ "pumping": 1, "device": "esp-pump" }</code> <span style="color:#888">(0 = OFF, 1 = ON)</span>
       </div>
 
       <h2>📊 GET Endpoints</h2>
