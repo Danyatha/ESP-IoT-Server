@@ -1,20 +1,46 @@
 // ===== INSTALL DULU =====
-// npm install express body-parser sqlite3 cors
+// npm install express body-parser sqlite3 cors http-proxy-middleware
 
 const express = require('express');
 const bodyParser = require('body-parser');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const os = require('os');
-const axios = require('axios');
-const ESP32_CAM = 'http://192.168.18.133';
+const path = require('path');
 
 const app = express();
 const PORT = 3000;
 
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'frontend/build')));
+
+// ===== ESP32-CAM PROXY =====
+const ESP32_CAM_IP   = process.env.ESP32_CAM_IP   || '192.168.18.133';
+const ESP32_CAM_PORT = process.env.ESP32_CAM_PORT || '80';
+const ESP32_CAM_URL  = `http://${ESP32_CAM_IP}:${ESP32_CAM_PORT}`;
+
+console.log(`📷 ESP32-CAM proxy → ${ESP32_CAM_URL}`);
+
+app.use('/cam', createProxyMiddleware({
+    target: ESP32_CAM_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/cam': '' },
+    proxyTimeout: 30000,
+    timeout: 30000,
+    on: {
+        error: (err, req, res) => {
+            console.error('[cam-proxy] Error:', err.message);
+            if (!res.headersSent) {
+                res.status(502).json({ error: 'ESP32-CAM tidak terjangkau', detail: err.message });
+            }
+        },
+        proxyReq: (proxyReq, req) => {
+            console.log(`[cam-proxy] ${req.method} ${req.url}`);
+        }
+    }
+}));
 
 // Database Setup
 const db = new sqlite3.Database('./iot_data.db', (err) => {
@@ -320,44 +346,9 @@ app.delete('/api/cleanup', (req, res) => {
 });
 
 // Server Info
-app.get('/', (req, res) => {
-    res.send(`
-    <html>
-    <head>
-      <title>ESP8266 IoT Server</title>
-      <style>
-        body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; }
-        h1, h2 { color: #333; }
-        .endpoint { background: #f4f4f4; padding: 15px; margin: 15px 0; border-radius: 6px; }
-        code { background: #e0e0e0; padding: 3px 6px; border-radius: 4px; display: inline-block; }
-      </style>
-    </head>
-    <body>
-      <h1>🚀 ESP8266 IoT Server Running</h1>
-
-      <h2>📡 POST Endpoint</h2>
-      <div class="endpoint">
-        <strong>POST /data</strong> — Kirim data sensor. Field <b>device</b> WAJIB.<br><br>
-        <b>esp-main:</b>      <code>{ "temperature": 25.5, "humidity": 65.2, "device": "esp-main" }</code><br><br>
-        <b>esp-tds:</b>       <code>{ "tds": 120.5, "device": "esp-tds" }</code><br><br>
-        <b>esp-ph:</b>        <code>{ "ph": 7.12, "alk": 150.0, "temp": 28.5, "device": "esp-ph" }</code><br><br>
-        <b>esp-gas:</b>       <code>{ "adc_raw": 512, "voltage": 2.31, "baseline_v": 1.95, "rs_ro_ratio": 1.18, "status": "WARNING", "gas_hint": "CO", "device": "esp-gas" }</code><br><br>
-        <b>esp-turbidity:</b> <code>{ "turbidity": 3.25, "tss": 4.23, "clarity": 96.7, "voltage": 1.96, "device": "esp-turbidity" }</code><br><br>
-        <b>esp-pump:</b>      <code>{ "pumping": 1, "device": "esp-pump" }</code> <span style="color:#888">(0 = OFF, 1 = ON)</span>
-      </div>
-
-      <h2>📊 GET Endpoints</h2>
-      <div class="endpoint"><strong>GET /api/latest</strong> — Data terbaru tiap ESP</div>
-      <div class="endpoint"><strong>GET /api/debug</strong> — 🔍 Status tiap ESP: online/offline, kapan terakhir kirim</div>
-      <div class="endpoint"><strong>GET /api/history?limit=20</strong> — Riwayat data per jenis sensor</div>
-      <div class="endpoint"><strong>GET /api/all</strong> — Seluruh data mentah dari database</div>
-      <div class="endpoint"><strong>DELETE /api/cleanup?days=7</strong> — Hapus data lebih lama dari N hari</div>
-
-      <h2>🌐 ESP8266 Endpoint</h2>
-      <code>http://${getLocalIP()}:${PORT}/data</code>
-    </body>
-    </html>
-    `);
+// Serve React app for all non-API routes
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'frontend/build', 'index.html'));
 });
 
 function getLocalIP() {
@@ -376,55 +367,6 @@ process.on('SIGINT', () => {
         console.log('\n👋 Server closed');
         process.exit(0);
     });
-});
-// ===== CAMERA ROUTES (ESP32-CAM proxy) =====
-
-// List photos
-app.get('/cam/photos', async (req, res) => {
-    try {
-        const result = await axios.get(`${ESP32_CAM}/photos`, { timeout: 10000 });
-        res.json(result.data);
-    } catch (e) {
-        res.status(502).json({ error: 'ESP32-CAM tidak bisa dihubungi', detail: e.message });
-    }
-});
-
-// Capture photo
-app.post('/cam/capture', async (req, res) => {
-    try {
-        const result = await axios.post(`${ESP32_CAM}/capture`, {}, { timeout: 15000 });
-        res.json(result.data);
-    } catch (e) {
-        res.status(502).json({ error: 'ESP32-CAM tidak bisa dihubungi', detail: e.message });
-    }
-});
-
-// Serve photo file
-app.get('/cam/photo', async (req, res) => {
-    try {
-        const result = await axios.get(`${ESP32_CAM}/photo`, {
-            params: req.query,
-            responseType: 'stream',
-            timeout: 10000,
-        });
-        res.setHeader('Content-Type', result.headers['content-type'] || 'image/jpeg');
-        result.data.pipe(res);
-    } catch (e) {
-        res.status(502).json({ error: 'Gagal ambil foto', detail: e.message });
-    }
-});
-
-// Delete photo
-app.delete('/cam/delete', async (req, res) => {
-    try {
-        const result = await axios.delete(`${ESP32_CAM}/delete`, {
-            params: req.query,
-            timeout: 10000,
-        });
-        res.json(result.data);
-    } catch (e) {
-        res.status(502).json({ error: 'Gagal hapus foto', detail: e.message });
-    }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
