@@ -182,7 +182,7 @@ export default function IoTDashboard() {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const res = await fetch("http://202.10.40.22:3000/api/latest");
+                const res = await fetch("http://localhost:3000/api/latest");
                 const data = await res.json();
 
                 if (data) {
@@ -237,7 +237,7 @@ export default function IoTDashboard() {
     }, []);
 
     // ── Camera helpers ──
-    const camApi = (path, opts) => fetch('http://202.10.40.22:3000/cam' + path, opts);
+    const camApi = (path, opts) => fetch('http://localhost:3000/cam' + path, opts);
 
     const showCamToast = (msg, type = 'success') => {
         clearTimeout(camToastTimer.current);
@@ -280,7 +280,7 @@ export default function IoTDashboard() {
             if (!photos.length) { setCamFetching(false); return; }
             const latest = photos[0];
             const path = '/photos/' + latest.name.replace('/sdcard','').replace('/photos/','');
-            const url = '/cam/photo?file=' + encodeURIComponent(path) + '&t=' + Date.now();
+            const url = 'http://localhost:3000/cam/photo?file=' + encodeURIComponent(path) + '&t=' + Date.now();
             setCamPreviewUrl(url);
             setCamPreviewFile(latest.name.replace('/sdcard','').replace('/photos/',''));
         } catch {}
@@ -918,7 +918,7 @@ export default function IoTDashboard() {
                             ? <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgba(0,255,130,0.2)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>BELUM ADA FOTO</div>
                             : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
                                 {camPhotos.map(p => {
-                                    const imgUrl = '/cam/photo?file=' + encodeURIComponent(p.path);
+                                    const imgUrl = 'http://localhost:3000/cam/photo?file=' + encodeURIComponent(p.path);
                                     const sel = camSelected.has(p.name);
                                     return (
                                         <div key={p.name} style={{ background: '#0a1510', borderRadius: 8, overflow: 'hidden', border: `1px solid ${sel ? '#3b82f6' : 'rgba(0,255,130,0.12)'}`, transition: 'border-color .15s' }}>
