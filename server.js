@@ -6,6 +6,8 @@ const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const os = require('os');
+const axios = require('axios');
+const ESP32_CAM = 'http://192.168.18.133';
 
 const app = express();
 const PORT = 3000;
@@ -374,6 +376,55 @@ process.on('SIGINT', () => {
         console.log('\n👋 Server closed');
         process.exit(0);
     });
+});
+// ===== CAMERA ROUTES (ESP32-CAM proxy) =====
+
+// List photos
+app.get('/cam/photos', async (req, res) => {
+    try {
+        const result = await axios.get(`${ESP32_CAM}/photos`, { timeout: 10000 });
+        res.json(result.data);
+    } catch (e) {
+        res.status(502).json({ error: 'ESP32-CAM tidak bisa dihubungi', detail: e.message });
+    }
+});
+
+// Capture photo
+app.post('/cam/capture', async (req, res) => {
+    try {
+        const result = await axios.post(`${ESP32_CAM}/capture`, {}, { timeout: 15000 });
+        res.json(result.data);
+    } catch (e) {
+        res.status(502).json({ error: 'ESP32-CAM tidak bisa dihubungi', detail: e.message });
+    }
+});
+
+// Serve photo file
+app.get('/cam/photo', async (req, res) => {
+    try {
+        const result = await axios.get(`${ESP32_CAM}/photo`, {
+            params: req.query,
+            responseType: 'stream',
+            timeout: 10000,
+        });
+        res.setHeader('Content-Type', result.headers['content-type'] || 'image/jpeg');
+        result.data.pipe(res);
+    } catch (e) {
+        res.status(502).json({ error: 'Gagal ambil foto', detail: e.message });
+    }
+});
+
+// Delete photo
+app.delete('/cam/delete', async (req, res) => {
+    try {
+        const result = await axios.delete(`${ESP32_CAM}/delete`, {
+            params: req.query,
+            timeout: 10000,
+        });
+        res.json(result.data);
+    } catch (e) {
+        res.status(502).json({ error: 'Gagal hapus foto', detail: e.message });
+    }
 });
 
 app.listen(PORT, '0.0.0.0', () => {

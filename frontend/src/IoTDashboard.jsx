@@ -162,6 +162,23 @@ export default function IoTDashboard() {
     const [pumpHistory, setPumpHistory]           = useState([]);
     const [pumpStatus, setPumpStatus]             = useState(null); // null | 0 | 1
 
+    // ── Tab & Camera ──
+    const [activeTab, setActiveTab]               = useState('sensor');
+    const [camPhotos, setCamPhotos]               = useState([]);
+    const [camPreviewUrl, setCamPreviewUrl]       = useState(null);
+    const [camPreviewFile, setCamPreviewFile]     = useState('');
+    const [camPreviewTimer, setCamPreviewTimer]   = useState(null);
+    const [camPreviewInterval, setCamPreviewInterval] = useState(5000);
+    const [camAutoCapture, setCamAutoCapture]     = useState(false);
+    const [camAutoCaptureTimer, setCamAutoCaptureTimer] = useState(null);
+    const [camCapturing, setCamCapturing]         = useState(false);
+    const [camFetching, setCamFetching]           = useState(false);
+    const [camSelected, setCamSelected]           = useState(new Set());
+    const [camSelectMode, setCamSelectMode]       = useState(false);
+    const [camLightbox, setCamLightbox]           = useState(null);
+    const [camToast, setCamToast]                 = useState(null);
+    const camToastTimer                           = React.useRef(null);
+
     useEffect(() => {
         const fetchData = async () => {
             try {
@@ -218,6 +235,143 @@ export default function IoTDashboard() {
         const interval = setInterval(fetchData, 5000);
         return () => clearInterval(interval);
     }, []);
+
+    // ── Camera helpers ──
+    const camApi = (path, opts) => fetch('http://202.10.40.22:3000/cam' + path, opts);
+
+    const showCamToast = (msg, type = 'success') => {
+        clearTimeout(camToastTimer.current);
+        setCamToast({ msg, type });
+        camToastTimer.current = setTimeout(() => setCamToast(null), 3000);
+    };
+
+    const loadCamPhotos = async () => {
+        try {
+            const data = await camApi('/photos', { signal: AbortSignal.timeout(6000) }).then(r => r.json());
+            const photos = (data.photos || []).map(p => ({
+                ...p,
+                name: p.name.replace('/sdcard','').replace('/photos/',''),
+                path: '/photos/' + p.name.replace('/sdcard','').replace('/photos/',''),
+            })).sort((a, b) => b.name.localeCompare(a.name));
+            setCamPhotos(photos);
+        } catch {}
+    };
+
+    const camCapture = async () => {
+        setCamCapturing(true);
+        try {
+            const data = await camApi('/capture', { method: 'POST', signal: AbortSignal.timeout(15000) }).then(r => r.json());
+            if (data.success) {
+                showCamToast('✓ Foto disimpan: ' + data.filename.split('/').pop());
+                loadCamPhotos();
+            } else {
+                showCamToast(data.error || 'Gagal capture', 'error');
+            }
+        } catch { showCamToast('Timeout — ESP32 tidak response', 'error'); }
+        finally { setCamCapturing(false); }
+    };
+
+    const fetchLatestPreview = async () => {
+        if (camFetching) return;
+        setCamFetching(true);
+        try {
+            const data = await camApi('/photos', { signal: AbortSignal.timeout(5000) }).then(r => r.json());
+            const photos = (data.photos || []).sort((a, b) => b.name.localeCompare(a.name));
+            if (!photos.length) { setCamFetching(false); return; }
+            const latest = photos[0];
+            const path = '/photos/' + latest.name.replace('/sdcard','').replace('/photos/','');
+            const url = '/cam/photo?file=' + encodeURIComponent(path) + '&t=' + Date.now();
+            setCamPreviewUrl(url);
+            setCamPreviewFile(latest.name.replace('/sdcard','').replace('/photos/',''));
+        } catch {}
+        setCamFetching(false);
+    };
+
+    const startCamPreview = () => {
+        fetchLatestPreview();
+        const t = setInterval(fetchLatestPreview, camPreviewInterval);
+        setCamPreviewTimer(t);
+    };
+
+    const stopCamPreview = () => {
+        clearInterval(camPreviewTimer);
+        setCamPreviewTimer(null);
+    };
+
+    const toggleAutoCapture = (on) => {
+        setCamAutoCapture(on);
+        if (on) {
+            camCapture();
+            const t = setInterval(() => { camCapture(); fetchLatestPreview(); }, camPreviewInterval);
+            setCamAutoCaptureTimer(t);
+            if (!camPreviewTimer) startCamPreview();
+        } else {
+            clearInterval(camAutoCaptureTimer);
+            setCamAutoCaptureTimer(null);
+        }
+    };
+
+    const changePreviewInterval = (val) => {
+        setCamPreviewInterval(val);
+        if (camPreviewTimer) { clearInterval(camPreviewTimer); setCamPreviewTimer(setInterval(fetchLatestPreview, val)); }
+        if (camAutoCaptureTimer) { clearInterval(camAutoCaptureTimer); setCamAutoCaptureTimer(setInterval(() => { camCapture(); fetchLatestPreview(); }, val)); }
+    };
+
+    const toggleCamSelect = (name) => {
+        setCamSelected(prev => {
+            const next = new Set(prev);
+            next.has(name) ? next.delete(name) : next.add(name);
+            return next;
+        });
+    };
+
+    const toggleSelectAll = () => {
+        if (camSelected.size === camPhotos.length) setCamSelected(new Set());
+        else setCamSelected(new Set(camPhotos.map(p => p.name)));
+    };
+
+    const bulkDelete = async () => {
+        if (!camSelected.size) return;
+        if (!window.confirm(`Hapus ${camSelected.size} foto?`)) return;
+        let ok = 0;
+        for (const name of camSelected) {
+            const photo = camPhotos.find(p => p.name === name);
+            if (!photo) continue;
+            try {
+                const data = await camApi('/delete?file=' + encodeURIComponent(photo.path), { method: 'DELETE', signal: AbortSignal.timeout(5000) }).then(r => r.json());
+                if (data.success) ok++;
+            } catch {}
+        }
+        showCamToast(`Dihapus: ${ok} foto`);
+        setCamSelected(new Set());
+        setCamSelectMode(false);
+        loadCamPhotos();
+    };
+
+    const bulkDownload = async () => {
+        if (!camSelected.size) return;
+        const JSZip = (await import('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js')).default;
+        const zip = new JSZip();
+        const folder = zip.folder('photos');
+        let done = 0;
+        for (const name of camSelected) {
+            const photo = camPhotos.find(p => p.name === name);
+            if (!photo) continue;
+            try {
+                const res = await fetch('/cam/photo?file=' + encodeURIComponent(photo.path));
+                const blob = await res.blob();
+                folder.file(name, blob);
+                done++;
+            } catch {}
+        }
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(zipBlob);
+        a.download = `photos_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.zip`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showCamToast(`✓ ZIP ${done} foto siap`);
+    };
 
     const tempMin      = tempHistory.length      > 0 ? Math.floor(Math.min(...tempHistory) - 2)      : 20;
     const tempMax      = tempHistory.length      > 0 ? Math.ceil(Math.max(...tempHistory) + 2)        : 40;
@@ -300,7 +454,23 @@ export default function IoTDashboard() {
                 </div>
             </div>
 
-            <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {/* ── TAB NAV ── */}
+            <div style={{ display: 'flex', gap: 4, padding: '10px 28px 0', borderBottom: '1px solid rgba(0,255,130,0.1)', background: 'rgba(0,15,10,0.95)' }}>
+                {[['sensor', '📡 Sensor'], ['camera', '📷 Camera']].map(([id, label]) => (
+                    <button key={id} onClick={() => { setActiveTab(id); if (id === 'camera') loadCamPhotos(); }}
+                        style={{
+                            padding: '8px 20px', border: 'none', cursor: 'pointer',
+                            fontSize: '0.7rem', letterSpacing: '0.15em', fontFamily: '"Courier New", monospace',
+                            background: activeTab === id ? 'rgba(0,255,130,0.08)' : 'transparent',
+                            color: activeTab === id ? '#00ff82' : 'rgba(0,255,130,0.35)',
+                            borderBottom: activeTab === id ? '2px solid #00ff82' : '2px solid transparent',
+                            transition: 'all .15s',
+                        }}>{label}</button>
+                ))}
+            </div>
+
+            {/* ── SENSOR TAB ── */}
+            {activeTab === 'sensor' && <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
                 {/* Suhu Ruang */}
                 <div style={{ background: 'rgba(255,90,30,0.04)', border: '1px solid rgba(255,90,30,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
@@ -649,7 +819,139 @@ export default function IoTDashboard() {
                     </div>
                 </div>
 
-            </div>
+            </div>}
+
+            {/* ── CAMERA TAB ── */}
+            {activeTab === 'camera' && (
+                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                    {camToast && (
+                        <div style={{
+                            position: 'fixed', bottom: 24, right: 24, zIndex: 999,
+                            background: '#0d1a14', border: `1px solid ${camToast.type === 'error' ? '#ff4444' : '#00ff82'}`,
+                            borderRadius: 8, padding: '12px 16px', fontSize: '0.75rem',
+                            color: camToast.type === 'error' ? '#ff4444' : '#00ff82',
+                            fontFamily: '"Courier New", monospace', letterSpacing: '0.05em',
+                        }}>{camToast.msg}</div>
+                    )}
+
+                    {camLightbox && (
+                        <div onClick={() => setCamLightbox(null)} style={{
+                            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)', zIndex: 200,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                            <img src={camLightbox} alt="preview" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
+                            <span onClick={() => setCamLightbox(null)} style={{ position: 'absolute', top: 20, right: 24, fontSize: 28, color: 'rgba(0,255,130,0.4)', cursor: 'pointer' }}>✕</span>
+                        </div>
+                    )}
+
+                    {/* Preview */}
+                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase' }}>📷 Live Preview</span>
+                        </div>
+                        <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', background: '#000', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(0,255,130,0.15)', aspectRatio: '4/3', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {camPreviewUrl
+                                ? <img src={camPreviewUrl} alt="preview" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                                : <div style={{ color: 'rgba(0,255,130,0.2)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>TEKAN START PREVIEW</div>
+                            }
+                        </div>
+                        {camPreviewFile && <div style={{ textAlign: 'center', marginTop: 8, fontSize: '0.65rem', color: 'rgba(0,255,130,0.35)', letterSpacing: '0.1em' }}>{camPreviewFile}</div>}
+
+                        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
+                            {!camPreviewTimer
+                                ? <button onClick={startCamPreview} style={{ padding: '8px 18px', background: 'rgba(0,255,130,0.1)', border: '1px solid rgba(0,255,130,0.4)', borderRadius: 6, color: '#00ff82', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace' }}>▶ START</button>
+                                : <button onClick={stopCamPreview}  style={{ padding: '8px 18px', background: 'rgba(255,68,68,0.1)',  border: '1px solid rgba(255,68,68,0.4)',  borderRadius: 6, color: '#ff4444', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace' }}>⏹ STOP</button>
+                            }
+                            <button onClick={() => { camCapture(); setTimeout(fetchLatestPreview, 600); }} disabled={camCapturing}
+                                style={{ padding: '8px 18px', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.4)', borderRadius: 6, color: '#3b82f6', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace', opacity: camCapturing ? 0.5 : 1 }}>
+                                {camCapturing ? '⏳...' : '📷 AMBIL & TAMPILKAN'}
+                            </button>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 16, marginTop: 14, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{ fontSize: '0.65rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>INTERVAL:</span>
+                                <select value={camPreviewInterval} onChange={e => changePreviewInterval(Number(e.target.value))}
+                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '4px 8px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
+                                    <option value={1000}>1 detik</option>
+                                    <option value={3000}>3 detik</option>
+                                    <option value={5000}>5 detik</option>
+                                    <option value={10000}>10 detik</option>
+                                    <option value={60000}>1 menit</option>
+                                    <option value={300000}>5 menit</option>
+                                    <option value={600000}>10 menit</option>
+                                </select>
+                            </div>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.65rem', letterSpacing: '0.1em', color: 'rgba(0,255,130,0.5)' }}>
+                                <input type="checkbox" checked={camAutoCapture} onChange={e => toggleAutoCapture(e.target.checked)}
+                                    style={{ accentColor: '#00ff82', width: 14, height: 14 }} />
+                                AUTO-CAPTURE
+                                <span style={{ color: camAutoCapture ? '#00ff82' : 'rgba(0,255,130,0.3)' }}>{camAutoCapture ? 'ON' : 'OFF'}</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    {/* Gallery */}
+                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase' }}>🖼 Galeri</span>
+                                <span style={{ fontSize: '0.6rem', padding: '2px 8px', border: '1px solid rgba(0,255,130,0.2)', borderRadius: 10, color: 'rgba(0,255,130,0.5)', letterSpacing: '0.1em' }}>{camPhotos.length} foto</span>
+                                {camSelected.size > 0 && <span style={{ fontSize: '0.6rem', padding: '2px 8px', border: '1px solid rgba(59,130,246,0.4)', borderRadius: 10, color: '#3b82f6', letterSpacing: '0.1em' }}>{camSelected.size} dipilih</span>}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                {camSelectMode && <>
+                                    <button onClick={toggleSelectAll} style={{ padding: '5px 12px', background: 'rgba(0,255,130,0.08)', border: '1px solid rgba(0,255,130,0.3)', borderRadius: 5, color: '#00ff82', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>☑ SEMUA</button>
+                                    <button onClick={bulkDownload}   style={{ padding: '5px 12px', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 5, color: '#3b82f6', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>⬇ ZIP</button>
+                                    <button onClick={bulkDelete}     style={{ padding: '5px 12px', background: 'rgba(255,68,68,0.08)',  border: '1px solid rgba(255,68,68,0.3)',  borderRadius: 5, color: '#ff4444', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>✕ HAPUS</button>
+                                </>}
+                                <button onClick={() => { setCamSelectMode(s => !s); setCamSelected(new Set()); }}
+                                    style={{ padding: '5px 12px', background: camSelectMode ? 'rgba(255,68,68,0.08)' : 'rgba(0,255,130,0.05)', border: `1px solid ${camSelectMode ? 'rgba(255,68,68,0.3)' : 'rgba(0,255,130,0.2)'}`, borderRadius: 5, color: camSelectMode ? '#ff4444' : 'rgba(0,255,130,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>
+                                    {camSelectMode ? '✕ BATAL' : '☐ PILIH'}
+                                </button>
+                                <button onClick={loadCamPhotos} style={{ padding: '5px 12px', background: 'rgba(0,255,130,0.05)', border: '1px solid rgba(0,255,130,0.2)', borderRadius: 5, color: 'rgba(0,255,130,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>↻ REFRESH</button>
+                            </div>
+                        </div>
+
+                        {camPhotos.length === 0
+                            ? <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgba(0,255,130,0.2)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>BELUM ADA FOTO</div>
+                            : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
+                                {camPhotos.map(p => {
+                                    const imgUrl = '/cam/photo?file=' + encodeURIComponent(p.path);
+                                    const sel = camSelected.has(p.name);
+                                    return (
+                                        <div key={p.name} style={{ background: '#0a1510', borderRadius: 8, overflow: 'hidden', border: `1px solid ${sel ? '#3b82f6' : 'rgba(0,255,130,0.12)'}`, transition: 'border-color .15s' }}>
+                                            <div onClick={() => camSelectMode ? toggleCamSelect(p.name) : setCamLightbox(imgUrl)}
+                                                style={{ width: '100%', aspectRatio: '4/3', position: 'relative', overflow: 'hidden', background: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                <img src={imgUrl} alt={p.name} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.target.style.display='none'; }} />
+                                                {sel && <div style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: '50%', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff' }}>✓</div>}
+                                            </div>
+                                            <div style={{ padding: '8px 10px' }}>
+                                                <div style={{ fontSize: '0.65rem', fontFamily: 'monospace', color: 'rgba(0,255,130,0.4)', marginBottom: 4 }}>{p.name}</div>
+                                                <div style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.25)', marginBottom: 7 }}>{Math.round(p.size / 1024)} KB</div>
+                                                <div style={{ display: 'flex', gap: 5 }}>
+                                                    <a href={imgUrl} download={p.name} style={{ flex: 1, padding: '4px 6px', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, color: '#3b82f6', fontSize: '0.6rem', textAlign: 'center', textDecoration: 'none', fontFamily: '"Courier New", monospace' }}>⬇ DL</a>
+                                                    <button onClick={async () => {
+                                                        if (!window.confirm('Hapus ' + p.name + '?')) return;
+                                                        try {
+                                                            const data = await camApi('/delete?file=' + encodeURIComponent(p.path), { method: 'DELETE' }).then(r => r.json());
+                                                            if (data.success) { showCamToast('Dihapus: ' + p.name); loadCamPhotos(); }
+                                                            else showCamToast('Gagal hapus', 'error');
+                                                        } catch { showCamToast('Koneksi gagal', 'error'); }
+                                                    }} style={{ flex: 1, padding: '4px 6px', background: 'rgba(255,68,68,0.08)', border: '1px solid rgba(255,68,68,0.25)', borderRadius: 4, color: '#ff4444', fontSize: '0.6rem', cursor: 'pointer', fontFamily: '"Courier New", monospace' }}>✕</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        }
+                    </div>
+
+                </div>
+            )}
+
         </div>
     );
 }
