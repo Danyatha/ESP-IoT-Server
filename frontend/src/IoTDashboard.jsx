@@ -251,9 +251,9 @@ export default function IoTDashboard() {
             const data = await camApi('/photos', { signal: AbortSignal.timeout(6000) }).then(r => r.json());
             const photos = (data.photos || []).map(p => ({
                 ...p,
-                name: p.name.replace('/sdcard','').replace('/photos/',''),
-                path: '/photos/' + p.name.replace('/sdcard','').replace('/photos/',''),
-            })).sort((a, b) => b.name.localeCompare(a.name));
+                name: typeof p.name === 'string' ? p.name : String(p.name),
+                path: typeof p.name === 'string' ? p.name : String(p.name),
+            })).sort((a, b) => (b.time || 0) - (a.time || 0));
             setCamPhotos(photos);
         } catch {}
     };
@@ -280,10 +280,9 @@ export default function IoTDashboard() {
             const photos = (data.photos || []).sort((a, b) => b.name.localeCompare(a.name));
             if (!photos.length) { setCamFetching(false); return; }
             const latest = photos[0];
-            const path = '/photos/' + latest.name.replace('/sdcard','').replace('/photos/','');
-            const url = '/cam/photo?file=' + encodeURIComponent(path) + '&t=' + Date.now();
+            const url = 'http://202.10.40.22:3000/cam/photo?file=' + encodeURIComponent(latest.name) + '&t=' + Date.now();
             setCamPreviewUrl(url);
-            setCamPreviewFile(latest.name.replace('/sdcard','').replace('/photos/',''));
+            setCamPreviewFile(latest.name);
         } catch {}
         setCamFetching(false);
     };
@@ -339,7 +338,7 @@ export default function IoTDashboard() {
             const photo = camPhotos.find(p => p.name === name);
             if (!photo) continue;
             try {
-                const data = await camApi('/delete?file=' + encodeURIComponent(photo.path), { method: 'DELETE', signal: AbortSignal.timeout(5000) }).then(r => r.json());
+                const data = await camApi('/delete?file=' + encodeURIComponent(photo.name), { method: 'DELETE', signal: AbortSignal.timeout(5000) }).then(r => r.json());
                 if (data.success) ok++;
             } catch {}
         }

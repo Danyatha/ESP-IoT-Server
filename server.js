@@ -16,31 +16,99 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'frontend/build')));
 
-// ===== ESP32-CAM PROXY =====
+// ===== ESP32-CAM LOCAL STORAGE =====
+const fs = require('fs');
+const CAM_UPLOAD_DIR = path.join(__dirname, 'cam_photos');
+if (!fs.existsSync(CAM_UPLOAD_DIR)) fs.mkdirSync(CAM_UPLOAD_DIR, { recursive: true });
+
+console.log(`📷 ESP32-CAM photos dir: ${CAM_UPLOAD_DIR}`);
+
+// POST /cam/upload — terima foto dari ESP32-CAM
+app.post('/cam/upload', (req, res) => {
+    const filename = req.headers['x-filename'] || `photo_${Date.now()}.jpg`;
+    const filepath = path.join(CAM_UPLOAD_DIR, filename);
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        fs.writeFile(filepath, buf, err => {
+            if (err) {
+                console.error('[cam-upload] Error:', err.message);
+                return res.status(500).json({ success: false, error: err.message });
+            }
+            console.log(`[cam-upload] Tersimpan: ${filename} (${buf.length} bytes)`);
+            res.json({ success: true, filename });
+        });
+    });
+});
+
+// POST /cam/capture — trigger capture ke ESP32
 const ESP32_CAM_IP   = process.env.ESP32_CAM_IP   || '192.168.18.133';
 const ESP32_CAM_PORT = process.env.ESP32_CAM_PORT || '80';
-const ESP32_CAM_URL  = `http://${ESP32_CAM_IP}:${ESP32_CAM_PORT}`;
 
-console.log(`📷 ESP32-CAM proxy → ${ESP32_CAM_URL}`);
-
-app.use('/cam', createProxyMiddleware({
-    target: ESP32_CAM_URL,
-    changeOrigin: true,
-    pathRewrite: { '^/cam': '' },
-    proxyTimeout: 30000,
-    timeout: 30000,
-    on: {
-        error: (err, req, res) => {
-            console.error('[cam-proxy] Error:', err.message);
-            if (!res.headersSent) {
-                res.status(502).json({ error: 'ESP32-CAM tidak terjangkau', detail: err.message });
-            }
-        },
-        proxyReq: (proxyReq, req) => {
-            console.log(`[cam-proxy] ${req.method} ${req.url}`);
-        }
+app.post('/cam/capture', async (req, res) => {
+    try {
+        const http = require('http');
+        const options = { hostname: ESP32_CAM_IP, port: parseInt(ESP32_CAM_PORT), path: '/capture', method: 'POST', timeout: 10000 };
+        const espReq = http.request(options, espRes => {
+            let data = '';
+            espRes.on('data', chunk => data += chunk);
+            espRes.on('end', () => {
+                try { res.json(JSON.parse(data)); }
+                catch { res.json({ success: true }); }
+            });
+        });
+        espReq.on('error', () => res.status(502).json({ success: false, error: 'ESP32-CAM tidak terjangkau' }));
+        espReq.on('timeout', () => { espReq.destroy(); res.status(504).json({ success: false, error: 'Timeout' }); });
+        espReq.end();
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
     }
-}));
+});
+
+// GET /cam/photos — list foto di VPS
+app.get('/cam/photos', (req, res) => {
+    fs.readdir(CAM_UPLOAD_DIR, (err, files) => {
+        if (err) return res.json({ photos: [], count: 0 });
+        const photos = files
+            .filter(f => f.match(/\.(jpg|jpeg|png)$/i))
+            .map(f => {
+                const stat = fs.statSync(path.join(CAM_UPLOAD_DIR, f));
+                return { name: f, size: stat.size, time: stat.mtimeMs };
+            })
+            .sort((a, b) => b.time - a.time);
+        res.json({ photos, count: photos.length });
+    });
+});
+
+// GET /cam/photo?file=photo_0001.jpg
+app.get('/cam/photo', (req, res) => {
+    const filename = req.query.file;
+    if (!filename) return res.status(400).send('Parameter file dibutuhkan');
+    const filepath = path.join(CAM_UPLOAD_DIR, path.basename(filename));
+    if (!fs.existsSync(filepath)) return res.status(404).send('File tidak ditemukan');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.sendFile(filepath);
+});
+
+// DELETE /cam/delete?file=photo_0001.jpg
+app.delete('/cam/delete', (req, res) => {
+    const filename = req.query.file;
+    if (!filename) return res.status(400).json({ success: false });
+    const filepath = path.join(CAM_UPLOAD_DIR, path.basename(filename));
+    fs.unlink(filepath, err => {
+        if (err) return res.status(404).json({ success: false });
+        res.json({ success: true });
+    });
+});
+
+// GET /cam/status
+app.get('/cam/status', (req, res) => {
+    fs.readdir(CAM_UPLOAD_DIR, (err, files) => {
+        const count = err ? 0 : files.filter(f => f.match(/\.(jpg|jpeg|png)$/i)).length;
+        res.json({ status: 'online', photoCount: count, storage: 'vps' });
+    });
+});
 
 // Database Setup
 const db = new sqlite3.Database('./iot_data.db', (err) => {
