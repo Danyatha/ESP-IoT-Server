@@ -140,6 +140,7 @@ function EspBadge({ label, ageSeconds }) {
             }} />
             <span style={{ fontSize: '0.6rem', color, letterSpacing: '0.1em' }}>{label} · {text}</span>
         </div>
+
     );
 }
 
@@ -179,6 +180,13 @@ export default function IoTDashboard() {
     const [camLightbox, setCamLightbox]           = useState(null);
     const [camToast, setCamToast]                 = useState(null);
     const camToastTimer                           = React.useRef(null);
+
+    // ── Manage ──
+    const [csvDevice, setCsvDevice]   = useState('all');
+    const [csvDays, setCsvDays]       = useState(30);
+    const [dbCount, setDbCount]       = useState(null);
+    const [dbDeleting, setDbDeleting] = useState(false);
+    const [manageMsg, setManageMsg]   = useState(null);
 
     useEffect(() => {
         const fetchData = async () => {
@@ -455,7 +463,7 @@ export default function IoTDashboard() {
 
             {/* ── TAB NAV ── */}
             <div style={{ display: 'flex', gap: 4, padding: '10px 28px 0', borderBottom: '1px solid rgba(0,255,130,0.1)', background: 'rgba(0,15,10,0.95)' }}>
-                {[['sensor', '📡 Sensor'], ['camera', '📷 Camera']].map(([id, label]) => (
+                {[['sensor', '📡 Sensor'], ['camera', '📷 Camera'], ['manage', '⚙ Manage']].map(([id, label]) => (
                     <button key={id} onClick={() => { setActiveTab(id); if (id === 'camera') loadCamPhotos(); }}
                         style={{
                             padding: '8px 20px', border: 'none', cursor: 'pointer',
@@ -946,6 +954,107 @@ export default function IoTDashboard() {
                                 })}
                             </div>
                         }
+                    </div>
+
+                </div>
+            )}
+
+
+            {/* ── MANAGE TAB ── */}
+            {activeTab === 'manage' && (
+                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 700 }}>
+
+                    {manageMsg && (
+                        <div style={{
+                            padding: '12px 16px', borderRadius: 8, fontSize: '0.75rem',
+                            fontFamily: '"Courier New", monospace', letterSpacing: '0.05em',
+                            background: manageMsg.type === 'error' ? 'rgba(255,68,68,0.08)' : 'rgba(0,255,130,0.08)',
+                            border: `1px solid ${manageMsg.type === 'error' ? 'rgba(255,68,68,0.4)' : 'rgba(0,255,130,0.4)'}`,
+                            color: manageMsg.type === 'error' ? '#ff4444' : '#00ff82',
+                        }}>{manageMsg.text}</div>
+                    )}
+
+                    {/* Export CSV */}
+                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
+                        <div style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase', marginBottom: 16 }}>⬇ Export CSV</div>
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>DEVICE</span>
+                                <select value={csvDevice} onChange={e => setCsvDevice(e.target.value)}
+                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '6px 10px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
+                                    <option value="all">Semua Device</option>
+                                    <option value="esp-main">esp-main (Suhu/Humidity)</option>
+                                    <option value="esp-tds">esp-tds (TDS)</option>
+                                    <option value="esp-ph">esp-ph (pH)</option>
+                                    <option value="esp-gas">esp-gas (Gas)</option>
+                                    <option value="esp-turbidity">esp-turbidity</option>
+                                    <option value="esp-pump">esp-pump (Pompa)</option>
+                                </select>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>RANGE</span>
+                                <select value={csvDays} onChange={e => setCsvDays(Number(e.target.value))}
+                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '6px 10px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
+                                    <option value={1}>1 hari</option>
+                                    <option value={7}>7 hari</option>
+                                    <option value={30}>30 hari</option>
+                                    <option value={90}>90 hari</option>
+                                    <option value={9999}>Semua data</option>
+                                </select>
+                            </div>
+                        </div>
+                        <a
+                            href={`http://202.10.40.22:3000/api/export/csv?device=${csvDevice === 'all' ? '' : csvDevice}&days=${csvDays}`}
+                            download
+                            style={{
+                                display: 'inline-block', padding: '9px 20px',
+                                background: 'rgba(0,255,130,0.1)', border: '1px solid rgba(0,255,130,0.4)',
+                                borderRadius: 6, color: '#00ff82', textDecoration: 'none',
+                                fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace',
+                            }}>
+                            ⬇ Download CSV
+                        </a>
+                    </div>
+
+                    {/* Clear Database */}
+                    <div style={{ background: 'rgba(255,68,68,0.03)', border: '1px solid rgba(255,68,68,0.2)', borderRadius: 8, padding: 20 }}>
+                        <div style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#ff4444', textTransform: 'uppercase', marginBottom: 8 }}>⚠ Kosongkan Database</div>
+                        <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.3)', marginBottom: 16, letterSpacing: '0.05em', lineHeight: 1.6 }}>
+                            Hapus semua data sensor dari database. Aksi ini tidak bisa dibatalkan.<br/>
+                            Pastikan sudah export CSV sebelum mengosongkan.
+                        </div>
+                        {dbCount !== null && (
+                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,68,68,0.6)', marginBottom: 12, letterSpacing: '0.1em' }}>
+                                Total data: <strong style={{ color: '#ff4444' }}>{dbCount.toLocaleString()}</strong> rows
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', gap: 10 }}>
+                            <button onClick={async () => {
+                                try {
+                                    const res = await fetch('http://202.10.40.22:3000/api/db/count').then(r => r.json());
+                                    setDbCount(res.count);
+                                } catch { setManageMsg({ type: 'error', text: 'Gagal ambil jumlah data' }); }
+                            }} style={{ padding: '8px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>
+                                🔍 Cek Jumlah Data
+                            </button>
+                            <button onClick={async () => {
+                                if (!window.confirm('YAKIN ingin menghapus SEMUA data sensor? Aksi ini tidak bisa dibatalkan!')) return;
+                                if (!window.confirm('Konfirmasi sekali lagi — semua data akan HILANG PERMANEN.')) return;
+                                setDbDeleting(true);
+                                try {
+                                    const res = await fetch('http://202.10.40.22:3000/api/db/clear', { method: 'DELETE' }).then(r => r.json());
+                                    if (res.success) {
+                                        setDbCount(0);
+                                        setManageMsg({ type: 'success', text: `✓ Database dikosongkan. ${res.deleted} rows dihapus.` });
+                                    } else {
+                                        setManageMsg({ type: 'error', text: res.error || 'Gagal hapus' });
+                                    }
+                                } catch { setManageMsg({ type: 'error', text: 'Koneksi gagal' }); }
+                                setDbDeleting(false);
+                            }} disabled={dbDeleting} style={{ padding: '8px 16px', background: 'rgba(255,68,68,0.1)', border: '1px solid rgba(255,68,68,0.4)', borderRadius: 6, color: '#ff4444', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace', opacity: dbDeleting ? 0.5 : 1 }}>
+                                {dbDeleting ? '⏳ Menghapus...' : '🗑 Kosongkan Database'}
+                            </button>
+                        </div>
                     </div>
 
                 </div>

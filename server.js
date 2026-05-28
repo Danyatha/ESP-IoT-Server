@@ -471,6 +471,26 @@ app.delete('/api/cleanup', (req, res) => {
     );
 });
 
+
+// 8. Count rows
+app.get('/api/db/count', (req, res) => {
+    db.get('SELECT COUNT(*) as count FROM sensor_data', (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ count: row.count });
+    });
+});
+
+// 9. Clear database
+app.delete('/api/db/clear', (req, res) => {
+    db.run('DELETE FROM sensor_data', function(err) {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        db.run('VACUUM', () => {
+            console.log(`[db] Cleared ${this.changes} rows`);
+            res.json({ success: true, deleted: this.changes });
+        });
+    });
+});
+
 // Server Info
 // Serve React app for all non-API routes
 app.get('*', (req, res) => {
