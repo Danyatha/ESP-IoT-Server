@@ -397,6 +397,64 @@ app.get('/api/all', (req, res) => {
     });
 });
 
+
+// 7. Export CSV
+app.get('/api/export/csv', (req, res) => {
+    const device = req.query.device || null;
+    const days   = parseInt(req.query.days) || 30;
+
+    let query = `SELECT id, device, timestamp, temperature, humidity, tds, ph, alk, temp,
+                        adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint,
+                        turbidity, tss, clarity, pumping
+                 FROM sensor_data
+                 WHERE timestamp >= datetime('now', ?)`;
+    const params = [`-${days} days`];
+
+    if (device) {
+        query += ` AND device = ?`;
+        params.push(device);
+    }
+    query += ` ORDER BY timestamp ASC`;
+
+    db.all(query, params, (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        const headers = [
+            'id','device','timestamp',
+            'temperature','humidity',
+            'tds','ph','alkalinity','water_temp',
+            'adc_raw','voltage','baseline_v','rs_ro_ratio','gas_status','gas_hint',
+            'turbidity','tss','clarity','pumping'
+        ];
+
+        const escape = (val) => {
+            if (val === null || val === undefined) return '';
+            const str = String(val);
+            if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                return '"' + str.replace(/"/g, '""') + '"';
+            }
+            return str;
+        };
+
+        const lines = [headers.join(',')];
+        rows.forEach(r => {
+            lines.push([
+                r.id, r.device, r.timestamp,
+                r.temperature, r.humidity,
+                r.tds, r.ph, r.alk, r.temp,
+                r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
+                r.turbidity, r.tss, r.clarity, r.pumping
+            ].map(escape).join(','));
+        });
+
+        const filename = `sensor_data_${device || 'all'}_${new Date().toISOString().slice(0,10)}.csv`;
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(lines.join('\n'));
+        console.log(`[csv] Export ${rows.length} rows → ${filename}`);
+    });
+});
+
 // 6. Delete old data
 app.delete('/api/cleanup', (req, res) => {
     const daysToKeep = parseInt(req.query.days, 10) || 7;
