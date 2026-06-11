@@ -9,6 +9,7 @@ const MAX_POINTS = 60;
 const AGE_DELAYED = 60;
 const AGE_OFFLINE = 120;
 const PUMP_AGE_OFFLINE = 20;
+const SERVER = 'http://202.10.40.22:3000'; // ganti satu baris ini jika IP/port berubah
 
 /* ────────────────────────────────────────────────────────────────
    TEMA TERANG · FORMAL
@@ -379,7 +380,7 @@ export default function IoTDashboard() {
     useEffect(() => {
         const fetchData = async () => {
             try {
-                const res = await fetch("http://202.10.40.22:3000/api/latest");
+                const res = await fetch(SERVER + "/api/latest");
                 const data = await res.json();
                 if (data) {
                     const newData = {
@@ -430,7 +431,7 @@ export default function IoTDashboard() {
     }, []);
 
     // ── Camera helpers ──
-    const camApi = (path, opts) => fetch('/cam' + path, opts);
+    const camApi = (path, opts) => fetch(SERVER + '/cam' + path, opts);
     const showCamToast = (msg, type = 'success') => {
         clearTimeout(camToastTimer.current);
         setCamToast({ msg, type });
@@ -468,7 +469,7 @@ export default function IoTDashboard() {
             const photos = (data.photos || []).sort((a, b) => b.name.localeCompare(a.name));
             if (!photos.length) { setCamFetching(false); return; }
             const latest = photos[0];
-            const url = 'http://202.10.40.22:3000/cam/photo?file=' + encodeURIComponent(latest.name) + '&t=' + Date.now();
+            const url = SERVER + '/cam/photo?file=' + encodeURIComponent(latest.name) + '&t=' + Date.now();
             setCamPreviewUrl(url);
             setCamPreviewFile(latest.name);
         } catch {}
@@ -544,7 +545,7 @@ export default function IoTDashboard() {
             setZipProgress({ phase: 'fetching', current: done + 1, total, fileName: name, percent: Math.round((done / total) * 88) });
             if (photo) {
                 try {
-                    const res = await fetch('/cam/photo?file=' + encodeURIComponent(photo.path));
+                    const res = await fetch(SERVER + '/cam/photo?file=' + encodeURIComponent(photo.path));
                     const blob = await res.blob();
                     folder.file(name, blob);
                 } catch {}
@@ -1068,7 +1069,7 @@ export default function IoTDashboard() {
                             ? <div style={{ textAlign: 'center', padding: '40px 20px', color: T.textFaint, fontSize: '0.72rem' }}>Belum ada foto</div>
                             : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
                                 {camPhotos.map(p => {
-                                    const imgUrl = '/cam/photo?file=' + encodeURIComponent(p.path);
+                                    const imgUrl = SERVER + '/cam/photo?file=' + encodeURIComponent(p.path);
                                     const sel = camSelected.has(p.name);
                                     return (
                                         <div key={p.name} style={{ background: T.panel, borderRadius: 10, overflow: 'hidden', border: `1px solid ${sel ? T.brand : T.border}`, transition: 'border-color .15s', boxShadow: T.shadow }}>
@@ -1132,7 +1133,7 @@ export default function IoTDashboard() {
                                     <option value={1}>1 hari</option><option value={7}>7 hari</option><option value={30}>30 hari</option><option value={90}>90 hari</option><option value={9999}>Semua data</option>
                                 </select>
                             </div>
-                            <a href={`http://202.10.40.22:3000/api/export/csv?device=${csvDevice === 'all' ? '' : csvDevice}&days=${csvDays}`} download style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: T.brand, border: 'none', borderRadius: 8, color: '#fff', textDecoration: 'none', fontSize: '0.74rem', fontWeight: 600, fontFamily: T.ui, boxShadow: T.shadow }}>
+                            <a href={`${SERVER}/api/export/csv?device=${csvDevice === 'all' ? '' : csvDevice}&days=${csvDays}`} download style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: T.brand, border: 'none', borderRadius: 8, color: '#fff', textDecoration: 'none', fontSize: '0.74rem', fontWeight: 600, fontFamily: T.ui, boxShadow: T.shadow }}>
                                 <Download size={14} /> Unduh CSV
                             </a>
                         </div>
@@ -1154,7 +1155,7 @@ export default function IoTDashboard() {
                         )}
                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                             <button onClick={async () => {
-                                try { const res = await fetch('http://202.10.40.22:3000/api/db/count').then(r => r.json()); setDbCount(res.count); }
+                                try { const res = await fetch(SERVER + '/api/db/count').then(r => r.json()); setDbCount(res.count); }
                                 catch { setManageMsg({ type: 'error', text: 'Gagal mengambil jumlah data' }); }
                             }} style={{ padding: '9px 16px', background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textMut, cursor: 'pointer', fontSize: '0.7rem', fontWeight: 600, fontFamily: T.ui }}>🔍 Cek Jumlah Data</button>
                             <button onClick={async () => {
@@ -1162,7 +1163,7 @@ export default function IoTDashboard() {
                                 if (!window.confirm('Konfirmasi sekali lagi — semua data akan hilang permanen.')) return;
                                 setDbDeleting(true);
                                 try {
-                                    const res = await fetch('http://202.10.40.22:3000/api/db/clear', { method: 'DELETE' }).then(r => r.json());
+                                    const res = await fetch(SERVER + '/api/db/clear', { method: 'DELETE' }).then(r => r.json());
                                     if (res.success) { setDbCount(0); setManageMsg({ type: 'success', text: `Database dikosongkan. ${res.deleted} baris dihapus.` }); }
                                     else setManageMsg({ type: 'error', text: res.error || 'Gagal menghapus' });
                                 } catch { setManageMsg({ type: 'error', text: 'Koneksi gagal' }); }
