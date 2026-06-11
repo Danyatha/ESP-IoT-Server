@@ -1,13 +1,87 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import JSZip from 'jszip';
-import { Thermometer, Droplets, Activity, Beaker, FlaskConical, Waves, Wind, Eye, Zap } from 'lucide-react';
+import {
+    Thermometer, Droplets, Activity, Beaker, FlaskConical, Waves, Wind, Eye, Zap,
+    TrendingUp, TrendingDown, Minus, BarChart3, Download, FileDown, X, CheckCircle2, Loader2,
+} from 'lucide-react';
 
 const MAX_POINTS = 60;
 const AGE_DELAYED = 60;
 const AGE_OFFLINE = 120;
 const PUMP_AGE_OFFLINE = 20;
 
-function ECGChart({ data, color, label, unit, min, max }) {
+/* ────────────────────────────────────────────────────────────────
+   TEMA TERANG · FORMAL
+   Palet instrumen laboratorium: latar terang, teks slate gelap,
+   nilai angka monospace, aksen warna per sensor dengan kontras
+   yang cukup di atas latar putih.
+   ──────────────────────────────────────────────────────────────── */
+const T = {
+    bg:          '#eef2f7',
+    panel:       '#ffffff',
+    panelSubtle: '#f8fafc',
+    border:      '#e2e8f0',
+    borderMid:   '#cbd5e1',
+    text:        '#1e293b',
+    textMut:     '#64748b',
+    textFaint:   '#94a3b8',
+    brand:       '#0e7490',
+    shadow:      '0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.06)',
+    shadowMd:    '0 4px 16px rgba(15,23,42,0.10)',
+    ui:          "'Inter', -apple-system, 'Segoe UI', Roboto, system-ui, sans-serif",
+    mono:        "'SF Mono', 'Roboto Mono', 'Consolas', monospace",
+};
+const C = {
+    roomTemp:  '#c2410c',
+    humid:     '#0369a1',
+    tds:       '#6d28d9',
+    ph:        '#0f766e',
+    waterTemp: '#a16207',
+    turb:      '#0e7490',
+    gas:       '#c2410c',
+    pumpOn:    '#15803d',
+    ok:        '#15803d',
+    warn:      '#b45309',
+    danger:    '#b91c1c',
+    neutral:   '#64748b',
+};
+// latar kartu bertint sangat tipis dari warna aksen
+const tint = (hex, a = '0d') => hex + a;
+
+/* ────────────────────────────────────────────────────────────────
+   ANALISA REAL-TIME — statistik per parameter dari riwayat
+   ──────────────────────────────────────────────────────────────── */
+function analyze(arr) {
+    if (!arr || arr.length === 0) return null;
+    const n = arr.length;
+    const mean = arr.reduce((a, b) => a + b, 0) / n;
+    const min = Math.min(...arr);
+    const max = Math.max(...arr);
+    const variance = arr.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+    const std = Math.sqrt(variance);
+    const cv = mean !== 0 ? (std / Math.abs(mean)) * 100 : 0;
+    const current = arr[n - 1];
+    const range = max - min;
+    // tren via kemiringan regresi linear sederhana terhadap indeks
+    let slope = 0;
+    if (n >= 2) {
+        const xm = (n - 1) / 2;
+        let num = 0, den = 0;
+        arr.forEach((y, i) => { num += (i - xm) * (y - mean); den += (i - xm) ** 2; });
+        slope = den ? num / den : 0;
+    }
+    const roc = n >= 2 ? arr[n - 1] - arr[n - 2] : 0;
+    const thr = (std * 0.08) || 1e-6;
+    let trend = 'stabil';
+    if (slope > thr) trend = 'naik';
+    else if (slope < -thr) trend = 'turun';
+    return { n, mean, min, max, std, cv, current, slope, roc, range, trend };
+}
+
+const fmt = (v, d = 1) => (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(d);
+
+/* ── Chart garis (gaya ECG) — disesuaikan untuk latar terang ── */
+function ECGChart({ data, color, min, max }) {
     const width = 600, height = 120;
     const padLeft = 40, padRight = 10, padTop = 10, padBottom = 10;
     const chartW = width - padLeft - padRight;
@@ -17,26 +91,21 @@ function ECGChart({ data, color, label, unit, min, max }) {
         const range = max - min || 1;
         return padTop + chartH - ((val - min) / range) * chartH;
     };
-
     const filledData = Array(MAX_POINTS).fill(null).map((_, i) => {
         const offset = MAX_POINTS - data.length;
         return i >= offset ? data[i - offset] : null;
     });
-
     const validPoints = filledData
         .map((val, i) => val !== null ? { x: padLeft + (i / (MAX_POINTS - 1)) * chartW, y: toY(val) } : null)
         .filter(Boolean);
-
     const polylinePoints = validPoints.map(p => `${p.x},${p.y}`).join(' ');
     const areaPoints = validPoints.length > 1
         ? `${validPoints[0].x},${padTop + chartH} ${polylinePoints} ${validPoints[validPoints.length - 1].x},${padTop + chartH}`
         : '';
-
     const gridLines = [0, 0.25, 0.5, 0.75, 1].map(t => ({
         y: padTop + chartH * (1 - t),
         val: min + t * (max - min),
     }));
-
     const last = validPoints[validPoints.length - 1];
 
     return (
@@ -44,20 +113,19 @@ function ECGChart({ data, color, label, unit, min, max }) {
             {gridLines.map(({ y, val }, i) => (
                 <g key={i}>
                     <line x1={padLeft} y1={y} x2={width - padRight} y2={y}
-                        stroke={color} strokeOpacity="0.12" strokeWidth="1"
-                        strokeDasharray={i === 2 ? "0" : "4 4"} />
+                        stroke={i === 2 ? T.borderMid : T.border} strokeWidth="1"
+                        strokeDasharray={i === 2 ? '0' : '4 4'} />
                     <text x={padLeft - 4} y={y + 4} textAnchor="end"
-                        fontSize="9" fill={color} fillOpacity="0.5" fontFamily="monospace">
+                        fontSize="9" fill={T.textFaint} fontFamily={T.mono}>
                         {val.toFixed(0)}
                     </text>
                 </g>
             ))}
-            {areaPoints && <polygon points={areaPoints} fill={color} fillOpacity="0.07" />}
-            {polylinePoints && <polyline points={polylinePoints} fill="none" stroke={color} strokeWidth="5" strokeOpacity="0.12" strokeLinecap="round" strokeLinejoin="round" />}
-            {polylinePoints && <polyline points={polylinePoints} fill="none" stroke={color} strokeWidth="2" strokeOpacity="0.9" strokeLinecap="round" strokeLinejoin="round" />}
+            {areaPoints && <polygon points={areaPoints} fill={color} fillOpacity="0.08" />}
+            {polylinePoints && <polyline points={polylinePoints} fill="none" stroke={color} strokeWidth="2" strokeOpacity="0.95" strokeLinecap="round" strokeLinejoin="round" />}
             {last && (
                 <>
-                    <circle cx={last.x} cy={last.y} r="5" fill={color} fillOpacity="0.25" />
+                    <circle cx={last.x} cy={last.y} r="5" fill={color} fillOpacity="0.2" />
                     <circle cx={last.x} cy={last.y} r="2.5" fill={color} />
                 </>
             )}
@@ -65,41 +133,31 @@ function ECGChart({ data, color, label, unit, min, max }) {
     );
 }
 
-// Pump status bar chart — shows last N pumping states as colored bars
 function PumpChart({ data, color }) {
     const width = 600, height = 60;
     const padLeft = 40, padRight = 10, padTop = 8, padBottom = 8;
     const chartW = width - padLeft - padRight;
     const chartH = height - padTop - padBottom;
-
     const filledData = Array(MAX_POINTS).fill(null).map((_, i) => {
         const offset = MAX_POINTS - data.length;
         return i >= offset ? data[i - offset] : null;
     });
-
     const barW = chartW / MAX_POINTS;
-
     return (
         <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-            <text x={padLeft - 4} y={padTop + chartH / 2 + 4} textAnchor="end"
-                fontSize="8" fill={color} fillOpacity="0.4" fontFamily="monospace">ON</text>
-            <text x={padLeft - 4} y={padTop + chartH + 4} textAnchor="end"
-                fontSize="8" fill={color} fillOpacity="0.4" fontFamily="monospace">OFF</text>
+            <text x={padLeft - 4} y={padTop + chartH / 2 + 4} textAnchor="end" fontSize="8" fill={T.textFaint} fontFamily={T.mono}>ON</text>
+            <text x={padLeft - 4} y={padTop + chartH + 4} textAnchor="end" fontSize="8" fill={T.textFaint} fontFamily={T.mono}>OFF</text>
             {filledData.map((val, i) => {
                 if (val === null) return null;
                 const x = padLeft + i * barW;
                 const isOn = val === 1;
                 return (
-                    <rect
-                        key={i}
-                        x={x + 0.5}
+                    <rect key={i} x={x + 0.5}
                         y={isOn ? padTop : padTop + chartH * 0.6}
                         width={Math.max(barW - 1, 1)}
                         height={isOn ? chartH : chartH * 0.4}
-                        fill={isOn ? color : 'rgba(255,255,255,0.08)'}
-                        fillOpacity={isOn ? 0.85 : 1}
-                        rx="1"
-                    />
+                        fill={isOn ? color : '#e2e8f0'}
+                        fillOpacity={isOn ? 0.85 : 1} rx="1" />
                 );
             })}
         </svg>
@@ -107,43 +165,172 @@ function PumpChart({ data, color }) {
 }
 
 function gasStatusStyle(status) {
-    if (!status) return { color: 'rgba(255,255,255,0.3)', border: 'rgba(255,255,255,0.15)', bg: 'transparent' };
+    if (!status) return { color: T.textFaint, border: T.border, bg: T.panelSubtle };
     const s = status.toUpperCase();
-    if (s === 'NORMAL')  return { color: '#00ff82', border: 'rgba(0,255,130,0.3)',   bg: 'rgba(0,255,130,0.07)'  };
-    if (s === 'WARNING') return { color: '#ffcc00', border: 'rgba(255,200,0,0.35)',  bg: 'rgba(255,200,0,0.07)'  };
-    if (s === 'DANGER')  return { color: '#ff4444', border: 'rgba(255,68,68,0.4)',   bg: 'rgba(255,68,68,0.08)'  };
-    return { color: '#aaaaaa', border: 'rgba(170,170,170,0.2)', bg: 'transparent' };
+    if (s === 'NORMAL')  return { color: C.ok,     border: tint(C.ok, '55'),     bg: tint(C.ok, '12')     };
+    if (s === 'WARNING') return { color: C.warn,   border: tint(C.warn, '55'),   bg: tint(C.warn, '14')   };
+    if (s === 'DANGER')  return { color: C.danger, border: tint(C.danger, '55'), bg: tint(C.danger, '14') };
+    return { color: T.textMut, border: T.border, bg: T.panelSubtle };
 }
 
 function turbidityStatusStyle(ntu) {
-    if (ntu === null) return { color: 'rgba(255,255,255,0.3)', border: 'rgba(255,255,255,0.15)', bg: 'transparent', label: 'NO DATA' };
-    if (ntu <= 1)  return { color: '#00ff82', border: 'rgba(0,255,130,0.3)',   bg: 'rgba(0,255,130,0.07)',   label: 'SANGAT JERNIH' };
-    if (ntu <= 4)  return { color: '#00e5b0', border: 'rgba(0,229,176,0.3)',   bg: 'rgba(0,229,176,0.07)',   label: 'JERNIH'        };
-    if (ntu <= 25) return { color: '#ffcc00', border: 'rgba(255,200,0,0.35)',  bg: 'rgba(255,200,0,0.07)',   label: 'AGAK KERUH'    };
-    if (ntu <= 50) return { color: '#ff8c00', border: 'rgba(255,140,0,0.4)',   bg: 'rgba(255,140,0,0.08)',   label: 'KERUH'         };
-    return           { color: '#ff4444', border: 'rgba(255,68,68,0.4)',   bg: 'rgba(255,68,68,0.08)',   label: 'SANGAT KERUH'  };
+    if (ntu === null) return { color: T.textFaint, border: T.border, bg: T.panelSubtle, label: 'NO DATA' };
+    if (ntu <= 1)  return { color: C.ok,     border: tint(C.ok, '55'),     bg: tint(C.ok, '12'),     label: 'SANGAT JERNIH' };
+    if (ntu <= 4)  return { color: C.ph,     border: tint(C.ph, '55'),     bg: tint(C.ph, '12'),     label: 'JERNIH'        };
+    if (ntu <= 25) return { color: C.warn,   border: tint(C.warn, '55'),   bg: tint(C.warn, '14'),   label: 'AGAK KERUH'    };
+    if (ntu <= 50) return { color: C.gas,    border: tint(C.gas, '55'),    bg: tint(C.gas, '14'),    label: 'KERUH'         };
+    return           { color: C.danger, border: tint(C.danger, '55'), bg: tint(C.danger, '14'), label: 'SANGAT KERUH'  };
 }
 
 function EspBadge({ label, ageSeconds }) {
     let color, text;
-    if (ageSeconds === null)              { color = '#555';    text = 'NO DATA'; }
-    else if (ageSeconds < AGE_DELAYED)    { color = '#00ff82'; text = `${ageSeconds}s`; }
-    else if (ageSeconds < AGE_OFFLINE)    { color = '#ffcc00'; text = `${ageSeconds}s`; }
-    else                                  { color = '#ff4444'; text = 'OFFLINE';  }
-
+    if (ageSeconds === null)              { color = T.textFaint; text = 'NO DATA'; }
+    else if (ageSeconds < AGE_DELAYED)    { color = C.ok;     text = `${ageSeconds}s`; }
+    else if (ageSeconds < AGE_OFFLINE)    { color = C.warn;   text = `${ageSeconds}s`; }
+    else                                  { color = C.danger; text = 'OFFLINE'; }
     return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <div style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: color, boxShadow: `0 0 6px ${color}`,
+                width: 6, height: 6, borderRadius: '50%', background: color,
                 animation: ageSeconds !== null && ageSeconds < AGE_DELAYED ? 'pulse 1.4s infinite' : 'none',
             }} />
-            <span style={{ fontSize: '0.6rem', color, letterSpacing: '0.1em' }}>{label} · {text}</span>
+            <span style={{ fontSize: '0.62rem', color: T.textMut, letterSpacing: '0.04em', fontFamily: T.mono }}>
+                {label} · <span style={{ color }}>{text}</span>
+            </span>
         </div>
-
     );
 }
 
+/* ── Indikator tren untuk tab analisa ── */
+function TrendBadge({ trend }) {
+    const map = {
+        naik:   { Icon: TrendingUp,   color: C.danger, label: 'Naik'   },
+        turun:  { Icon: TrendingDown, color: C.humid,  label: 'Turun'  },
+        stabil: { Icon: Minus,        color: T.textMut, label: 'Stabil' },
+    };
+    const { Icon, color, label } = map[trend] || map.stabil;
+    return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color, fontSize: '0.72rem', fontWeight: 600 }}>
+            <Icon size={13} /> {label}
+        </span>
+    );
+}
+
+/* ── Kartu statistik analisa per parameter ── */
+function StatCard({ icon: Icon, label, unit, color, stats }) {
+    const cell = (k, v, u = '') => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: '0.58rem', color: T.textFaint, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{k}</span>
+            <span style={{ fontSize: '0.92rem', fontWeight: 600, color: T.text, fontFamily: T.mono }}>
+                {v}<span style={{ fontSize: '0.62rem', color: T.textFaint, marginLeft: 2 }}>{u}</span>
+            </span>
+        </div>
+    );
+    return (
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: 16, boxShadow: T.shadow }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 7, background: tint(color, '16'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Icon size={15} color={color} />
+                    </div>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 600, color: T.text }}>{label}</span>
+                </div>
+                {stats ? <TrendBadge trend={stats.trend} /> : null}
+            </div>
+            {stats ? (
+                <>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 14 }}>
+                        <span style={{ fontSize: '1.7rem', fontWeight: 700, color, fontFamily: T.mono, lineHeight: 1 }}>{fmt(stats.current, 2)}</span>
+                        <span style={{ fontSize: '0.7rem', color: T.textFaint }}>{unit}</span>
+                        <span style={{ marginLeft: 'auto', fontSize: '0.68rem', color: stats.roc > 0 ? C.danger : stats.roc < 0 ? C.humid : T.textFaint, fontFamily: T.mono }}>
+                            {stats.roc > 0 ? '▲' : stats.roc < 0 ? '▼' : '•'} {fmt(Math.abs(stats.roc), 2)}
+                        </span>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
+                        {cell('Rata2', fmt(stats.mean, 2))}
+                        {cell('Min', fmt(stats.min, 1))}
+                        {cell('Maks', fmt(stats.max, 1))}
+                        {cell('Std', fmt(stats.std, 2))}
+                        {cell('CV', fmt(stats.cv, 1), '%')}
+                        {cell('Rentang', fmt(stats.range, 1))}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: '0.6rem', color: T.textFaint }}>
+                        Berdasarkan {stats.n} pembacaan terakhir
+                    </div>
+                </>
+            ) : (
+                <div style={{ height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.textFaint, fontSize: '0.72rem' }}>
+                    Menunggu data…
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ── Notifikasi progress unduhan ZIP (gaya Google Drive) ── */
+function DownloadProgress({ state, onClose }) {
+    if (!state) return null;
+    const { phase, current, total, fileName, percent } = state;
+    const done = phase === 'done';
+    const error = phase === 'error';
+    const title = error ? 'Unduhan gagal'
+        : done ? 'Unduhan siap'
+        : phase === 'zipping' ? 'Mengemas arsip ZIP'
+        : 'Menyiapkan unduhan';
+    const sub = error ? (fileName || 'Terjadi kesalahan')
+        : done ? `${total} foto diunduh sebagai ZIP`
+        : phase === 'zipping' ? 'Menggabungkan foto…'
+        : `Mengambil ${current} dari ${total} foto`;
+    const barColor = error ? C.danger : done ? C.ok : T.brand;
+    return (
+        <div style={{
+            position: 'fixed', bottom: 24, right: 24, zIndex: 999, width: 340,
+            background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12,
+            boxShadow: '0 8px 28px rgba(15,23,42,0.18)', overflow: 'hidden',
+            fontFamily: T.ui,
+        }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px' }}>
+                <div style={{
+                    width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
+                    background: tint(barColor, '16'), display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                    {done ? <CheckCircle2 size={19} color={C.ok} />
+                        : error ? <X size={19} color={C.danger} />
+                        : <Loader2 size={18} color={T.brand} style={{ animation: 'spin 0.9s linear infinite' }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: T.text }}>{title}</div>
+                    <div style={{ fontSize: '0.68rem', color: T.textMut, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div>
+                </div>
+                <span style={{ fontSize: '0.72rem', fontWeight: 600, color: barColor, fontFamily: T.mono }}>
+                    {Math.round(percent)}%
+                </span>
+                {(done || error) && (
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: T.textFaint, padding: 2, display: 'flex' }}>
+                        <X size={16} />
+                    </button>
+                )}
+            </div>
+            {/* nama file yang sedang diproses */}
+            {!done && !error && fileName && (
+                <div style={{ padding: '0 14px 8px 58px', fontSize: '0.64rem', color: T.textFaint, fontFamily: T.mono, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {fileName}
+                </div>
+            )}
+            {/* bar progress */}
+            <div style={{ height: 4, background: T.border }}>
+                <div style={{
+                    height: '100%', width: `${percent}%`, background: barColor,
+                    transition: 'width 0.25s ease', borderRadius: '0 2px 2px 0',
+                }} />
+            </div>
+        </div>
+    );
+}
+
+/* ════════════════════════════════════════════════════════════════
+   KOMPONEN UTAMA
+   ════════════════════════════════════════════════════════════════ */
 export default function IoTDashboard() {
     const [latestData, setLatestData]             = useState(null);
     const [history, setHistory]                   = useState([]);
@@ -161,10 +348,10 @@ export default function IoTDashboard() {
     const [turbidityData, setTurbidityData]       = useState(null);
     const [ntuHistory, setNtuHistory]             = useState([]);
     const [clarityHistory, setClarityHistory]     = useState([]);
+    const [tssHistory, setTssHistory]             = useState([]);
     const [pumpHistory, setPumpHistory]           = useState([]);
-    const [pumpStatus, setPumpStatus]             = useState(null); // null | 0 | 1
+    const [pumpStatus, setPumpStatus]             = useState(null);
 
-    // ── Tab & Camera ──
     const [activeTab, setActiveTab]               = useState('sensor');
     const [camPhotos, setCamPhotos]               = useState([]);
     const [camPreviewUrl, setCamPreviewUrl]       = useState(null);
@@ -181,7 +368,8 @@ export default function IoTDashboard() {
     const [camToast, setCamToast]                 = useState(null);
     const camToastTimer                           = React.useRef(null);
 
-    // ── Manage ──
+    const [zipProgress, setZipProgress]           = useState(null);
+
     const [csvDevice, setCsvDevice]   = useState('all');
     const [csvDays, setCsvDays]       = useState(30);
     const [dbCount, setDbCount]       = useState(null);
@@ -193,7 +381,6 @@ export default function IoTDashboard() {
             try {
                 const res = await fetch("http://202.10.40.22:3000/api/latest");
                 const data = await res.json();
-
                 if (data) {
                     const newData = {
                         temperature: data.temperature != null ? parseFloat(Number(data.temperature).toFixed(1)) : null,
@@ -208,7 +395,6 @@ export default function IoTDashboard() {
                         pumping:     data.pumping != null ? Number(data.pumping) : null,
                         timestamp:   data.timestamp ? new Date(data.timestamp).toLocaleTimeString('id-ID') : '--',
                     };
-
                     setLatestData(newData);
                     setConnected(true);
                     setDeviceAge(data.device_age ?? {});
@@ -222,24 +408,22 @@ export default function IoTDashboard() {
                     if (newData.waterTemp   != null) setWaterTempHistory(prev => [...prev, newData.waterTemp].slice(-MAX_POINTS));
                     if (newData.turbidity   != null) setNtuHistory(prev   => [...prev,  newData.turbidity].slice(-MAX_POINTS));
                     if (newData.clarity     != null) setClarityHistory(prev => [...prev, newData.clarity].slice(-MAX_POINTS));
+                    if (newData.tss         != null) setTssHistory(prev   => [...prev,  newData.tss].slice(-MAX_POINTS));
                     if (newData.pumping     != null) {
                         setPumpStatus(newData.pumping);
                         setPumpHistory(prev => [...prev, newData.pumping].slice(-MAX_POINTS));
                     }
-
                     if (data.gas) {
                         setGasData(data.gas);
                         if (data.gas.rs_ro_ratio != null)
                             setRsRoHistory(prev => [...prev, parseFloat(Number(data.gas.rs_ro_ratio).toFixed(3))].slice(-MAX_POINTS));
                     }
-
                     if (data.turbidity) setTurbidityData(data.turbidity);
                 }
             } catch (err) {
                 setConnected(false);
             }
         };
-
         fetchData();
         const interval = setInterval(fetchData, 5000);
         return () => clearInterval(interval);
@@ -247,13 +431,11 @@ export default function IoTDashboard() {
 
     // ── Camera helpers ──
     const camApi = (path, opts) => fetch('/cam' + path, opts);
-
     const showCamToast = (msg, type = 'success') => {
         clearTimeout(camToastTimer.current);
         setCamToast({ msg, type });
         camToastTimer.current = setTimeout(() => setCamToast(null), 3000);
     };
-
     const loadCamPhotos = async () => {
         try {
             const data = await camApi('/photos', { signal: AbortSignal.timeout(6000) }).then(r => r.json());
@@ -265,21 +447,19 @@ export default function IoTDashboard() {
             setCamPhotos(photos);
         } catch {}
     };
-
     const camCapture = async () => {
         setCamCapturing(true);
         try {
             const data = await camApi('/capture', { method: 'POST', signal: AbortSignal.timeout(15000) }).then(r => r.json());
             if (data.success) {
-                showCamToast('✓ Foto disimpan: ' + data.filename.split('/').pop());
+                showCamToast('Foto disimpan: ' + data.filename.split('/').pop());
                 loadCamPhotos();
             } else {
                 showCamToast(data.error || 'Gagal capture', 'error');
             }
-        } catch { showCamToast('Timeout — ESP32 tidak response', 'error'); }
+        } catch { showCamToast('Timeout — ESP32 tidak merespons', 'error'); }
         finally { setCamCapturing(false); }
     };
-
     const fetchLatestPreview = async () => {
         if (camFetching) return;
         setCamFetching(true);
@@ -294,18 +474,15 @@ export default function IoTDashboard() {
         } catch {}
         setCamFetching(false);
     };
-
     const startCamPreview = () => {
         fetchLatestPreview();
         const t = setInterval(fetchLatestPreview, camPreviewInterval);
         setCamPreviewTimer(t);
     };
-
     const stopCamPreview = () => {
         clearInterval(camPreviewTimer);
         setCamPreviewTimer(null);
     };
-
     const toggleAutoCapture = (on) => {
         setCamAutoCapture(on);
         if (on) {
@@ -318,13 +495,11 @@ export default function IoTDashboard() {
             setCamAutoCaptureTimer(null);
         }
     };
-
     const changePreviewInterval = (val) => {
         setCamPreviewInterval(val);
         if (camPreviewTimer) { clearInterval(camPreviewTimer); setCamPreviewTimer(setInterval(fetchLatestPreview, val)); }
         if (camAutoCaptureTimer) { clearInterval(camAutoCaptureTimer); setCamAutoCaptureTimer(setInterval(() => { camCapture(); fetchLatestPreview(); }, val)); }
     };
-
     const toggleCamSelect = (name) => {
         setCamSelected(prev => {
             const next = new Set(prev);
@@ -332,12 +507,10 @@ export default function IoTDashboard() {
             return next;
         });
     };
-
     const toggleSelectAll = () => {
         if (camSelected.size === camPhotos.length) setCamSelected(new Set());
         else setCamSelected(new Set(camPhotos.map(p => p.name)));
     };
-
     const bulkDelete = async () => {
         if (!camSelected.size) return;
         if (!window.confirm(`Hapus ${camSelected.size} foto?`)) return;
@@ -356,30 +529,99 @@ export default function IoTDashboard() {
         loadCamPhotos();
     };
 
+    // ── Unduhan ZIP dengan progress bertahap (gaya Google Drive) ──
     const bulkDownload = async () => {
         if (!camSelected.size) return;
+        const names = [...camSelected];
+        const total = names.length;
+        setZipProgress({ phase: 'fetching', current: 0, total, fileName: '', percent: 0 });
+
         const zip = new JSZip();
         const folder = zip.folder('photos');
         let done = 0;
-        for (const name of camSelected) {
+        for (const name of names) {
             const photo = camPhotos.find(p => p.name === name);
-            if (!photo) continue;
-            try {
-                const res = await fetch('/cam/photo?file=' + encodeURIComponent(photo.path));
-                const blob = await res.blob();
-                folder.file(name, blob);
-                done++;
-            } catch {}
+            setZipProgress({ phase: 'fetching', current: done + 1, total, fileName: name, percent: Math.round((done / total) * 88) });
+            if (photo) {
+                try {
+                    const res = await fetch('/cam/photo?file=' + encodeURIComponent(photo.path));
+                    const blob = await res.blob();
+                    folder.file(name, blob);
+                } catch {}
+            }
+            done++;
         }
-        const zipBlob = await zip.generateAsync({ type: 'blob' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(zipBlob);
-        a.download = `photos_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.zip`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-        showCamToast(`✓ ZIP ${done} foto siap`);
+        setZipProgress({ phase: 'zipping', current: total, total, fileName: '', percent: 90 });
+        try {
+            const zipBlob = await zip.generateAsync({ type: 'blob' }, (meta) => {
+                setZipProgress(p => p ? { ...p, phase: 'zipping', percent: 90 + Math.round((meta.percent || 0) * 0.1) } : p);
+            });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(zipBlob);
+            a.download = `photos_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            setZipProgress({ phase: 'done', current: total, total, fileName: '', percent: 100 });
+            setTimeout(() => setZipProgress(p => (p && p.phase === 'done' ? null : p)), 5000);
+        } catch (e) {
+            setZipProgress({ phase: 'error', current: total, total, fileName: 'Gagal membuat ZIP', percent: 100 });
+        }
     };
 
+    // ── ANALISA: hitung statistik tiap parameter dari riwayat ──
+    const analysisRows = useMemo(() => ([
+        { key: 'temperature', label: 'Suhu Ruang',  unit: '°C',  color: C.roomTemp,  icon: Thermometer,  data: tempHistory },
+        { key: 'humidity',    label: 'Kelembapan',  unit: '%',   color: C.humid,     icon: Droplets,     data: humidHistory },
+        { key: 'tds',         label: 'TDS',         unit: 'ppm', color: C.tds,       icon: Beaker,       data: tdsHistory },
+        { key: 'ph',          label: 'pH',          unit: '',    color: C.ph,        icon: FlaskConical, data: phHistory },
+        { key: 'waterTemp',   label: 'Suhu Air',    unit: '°C',  color: C.waterTemp, icon: Waves,        data: waterTempHistory },
+        { key: 'turbidity',   label: 'Turbiditas',  unit: 'NTU', color: C.turb,      icon: Eye,          data: ntuHistory },
+        { key: 'tss',         label: 'TSS',         unit: 'mg/L',color: C.turb,      icon: Eye,          data: tssHistory },
+        { key: 'clarity',     label: 'Kejernihan',  unit: '%',   color: C.ok,        icon: Eye,          data: clarityHistory },
+        { key: 'rs_ro',       label: 'Gas Rs/Ro',   unit: '',    color: C.gas,       icon: Wind,         data: rsRoHistory },
+    ].map(r => ({ ...r, stats: analyze(r.data) }))), [tempHistory, humidHistory, tdsHistory, phHistory, waterTempHistory, ntuHistory, tssHistory, clarityHistory, rsRoHistory]);
+
+    // ── Download analisa sebagai CSV (sisi klien, tanpa server) ──
+    const downloadAnalysisCSV = () => {
+        const head = ['Parameter', 'Satuan', 'Terkini', 'Rata2', 'Min', 'Maks', 'Std', 'CV_persen', 'Rentang', 'Tren', 'n'];
+        const lines = [head.join(',')];
+        analysisRows.forEach(r => {
+            const s = r.stats;
+            if (!s) return;
+            lines.push([
+                r.label, r.unit, fmt(s.current, 2), fmt(s.mean, 2), fmt(s.min, 2), fmt(s.max, 2),
+                fmt(s.std, 3), fmt(s.cv, 1), fmt(s.range, 2), s.trend, s.n,
+            ].join(','));
+        });
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `analisa_realtime_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    };
+
+    // ── Download snapshot riwayat tabel log (CSV, sisi klien) ──
+    const downloadHistoryCSV = () => {
+        if (!history.length) return;
+        const head = ['Waktu', 'SuhuRuang', 'SuhuAir', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa'];
+        const lines = [head.join(',')];
+        history.forEach(d => {
+            lines.push([
+                d.timestamp, d.temperature ?? '', d.waterTemp ?? '', d.humidity ?? '', d.tds ?? '',
+                d.ph ?? '', d.alkalinity ?? '', d.turbidity ?? '', d.tss ?? '', d.clarity ?? '',
+                d.pumping == null ? '' : (d.pumping === 1 ? 'ON' : 'OFF'),
+            ].join(','));
+        });
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `log_sensor_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    };
+
+    // ── Rentang sumbu Y chart ──
     const tempMin      = tempHistory.length      > 0 ? Math.floor(Math.min(...tempHistory) - 2)      : 20;
     const tempMax      = tempHistory.length      > 0 ? Math.ceil(Math.max(...tempHistory) + 2)        : 40;
     const humidMin     = humidHistory.length     > 0 ? Math.floor(Math.min(...humidHistory) - 5)     : 30;
@@ -398,48 +640,78 @@ export default function IoTDashboard() {
     const gasStyle  = gasStatusStyle(gasData?.status);
     const turbStyle = turbidityStatusStyle(latestData?.turbidity ?? null);
 
-    // Pump ON/OFF ditentukan dari device_age, bukan dari nilai pumping field.
-    // ESP hanya kirim 1 selama hidup; jika tidak kirim data > PUMP_AGE_OFFLINE detik = OFF.
     const pumpAge        = deviceNames.pump ? (deviceAge[deviceNames.pump] ?? null) : null;
     const pumpNoData     = pumpAge === null;
     const pumpOn         = !pumpNoData && pumpAge < PUMP_AGE_OFFLINE;
-    const pumpColor      = pumpNoData ? '#555' : pumpOn ? '#00ff82' : '#ff4444';
+    const pumpColor      = pumpNoData ? T.textFaint : pumpOn ? C.pumpOn : C.danger;
     const pumpLabel      = pumpNoData ? 'NO DATA' : pumpOn ? 'ON' : 'OFF';
-    const pumpBorderColor = pumpNoData
-        ? 'rgba(255,255,255,0.1)'
-        : pumpOn ? 'rgba(0,255,130,0.25)'
-                 : 'rgba(255,68,68,0.25)';
-    const pumpBg = pumpNoData
-        ? 'rgba(255,255,255,0.02)'
-        : pumpOn ? 'rgba(0,255,130,0.04)'
-                 : 'rgba(255,68,68,0.04)';
+    const pumpBorderColor = pumpNoData ? T.border : pumpOn ? tint(C.pumpOn, '44') : tint(C.danger, '44');
+    const pumpBg         = pumpNoData ? T.panelSubtle : pumpOn ? tint(C.pumpOn, '0c') : tint(C.danger, '0c');
 
     const staleTag = (
-        <span style={{ fontSize: '0.55rem', padding: '2px 6px', borderRadius: 3, border: '1px solid rgba(255,68,68,0.4)', color: '#ff4444', letterSpacing: '0.1em' }}>STALE</span>
+        <span style={{ fontSize: '0.55rem', padding: '2px 6px', borderRadius: 4, border: `1px solid ${tint(C.danger, '55')}`, color: C.danger, letterSpacing: '0.06em', background: tint(C.danger, '0e') }}>STALE</span>
     );
 
+    // ── Helper kartu sensor (kerangka konsisten) ──
+    const sensorCard = (children) => (
+        <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 18px 12px', boxShadow: T.shadow }}>
+            {children}
+        </div>
+    );
+    const cardHead = (Icon, color, title, stale) => (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(color, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Icon size={16} color={color} />
+                </div>
+                <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>{title}</span>
+                {stale}
+            </div>
+        </div>
+    );
+    const waitBox = (h = 80) => (
+        <div style={{ height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.textFaint, fontSize: '0.72rem', letterSpacing: '0.04em' }}>Menunggu data…</div>
+    );
+    const footRange = (left, right, color) => (
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: T.textFaint, marginTop: 6 }}>
+            <span>{left}</span><span>{right}</span>
+        </div>
+    );
+    const bigVal = (val, unit, color) => (
+        <span style={{ fontSize: '1.9rem', fontWeight: 700, color, fontFamily: T.mono }}>
+            {val ?? '--'}{unit && <span style={{ fontSize: '0.85rem', color: T.textFaint, marginLeft: 2 }}>{unit}</span>}
+        </span>
+    );
+
+    const tabs = [['sensor', 'Sensor', Activity], ['analisa', 'Analisa', BarChart3], ['camera', 'Kamera', Eye], ['manage', 'Kelola', Download]];
+
     return (
-        <div style={{ minHeight: '100vh', background: '#050e0b', color: '#d0ffe8', fontFamily: '"Courier New", monospace' }}>
+        <div style={{ minHeight: '100vh', background: T.bg, color: T.text, fontFamily: T.ui }}>
             <style>{`
-                @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-                @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
-                @keyframes pumpglow { 0%,100%{box-shadow:0 0 12px #00ff82,0 0 24px rgba(0,255,130,0.3)} 50%{box-shadow:0 0 4px #00ff82} }
+                @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+                @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
+                @keyframes spin { to { transform: rotate(360deg) } }
+                * { box-sizing: border-box; }
+                button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid ${T.brand}; outline-offset: 2px; }
             `}</style>
 
             {/* Header */}
             <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '14px 28px', borderBottom: '1px solid rgba(0,255,130,0.12)',
-                background: 'rgba(0,15,10,0.95)',
+                padding: '14px 28px', borderBottom: `1px solid ${T.border}`,
+                background: T.panel, boxShadow: T.shadow, position: 'sticky', top: 0, zIndex: 50,
             }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <Activity size={20} color="#00ff82" />
-                    <span style={{ fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.25em', textTransform: 'uppercase', color: '#00ff82' }}>
-                        ESP8266 · IoT Monitor
-                    </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: tint(T.brand, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <Activity size={19} color={T.brand} />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '0.92rem', fontWeight: 700, letterSpacing: '0.02em', color: T.text }}>Monitor BRCPF</span>
+                        <span style={{ fontSize: '0.62rem', color: T.textMut, letterSpacing: '0.08em' }}>ESP8266 · Pemantauan Sensor Real-Time</span>
+                    </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+                    <div style={{ display: 'none', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }} className="esp-badges">
                         <EspBadge label={deviceNames.env       ?? 'env'}       ageSeconds={deviceNames.env       ? (deviceAge[deviceNames.env]       ?? null) : null} />
                         <EspBadge label={deviceNames.tds       ?? 'tds'}       ageSeconds={deviceNames.tds       ? (deviceAge[deviceNames.tds]       ?? null) : null} />
                         <EspBadge label={deviceNames.water     ?? 'water'}     ageSeconds={deviceNames.water     ? (deviceAge[deviceNames.water]     ?? null) : null} />
@@ -447,333 +719,189 @@ export default function IoTDashboard() {
                         <EspBadge label={deviceNames.turbidity ?? 'turbidity'} ageSeconds={deviceNames.turbidity ? (deviceAge[deviceNames.turbidity] ?? null) : null} />
                         <EspBadge label={deviceNames.pump      ?? 'pump'}      ageSeconds={deviceNames.pump      ? (deviceAge[deviceNames.pump]      ?? null) : null} />
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.7rem', letterSpacing: '0.15em' }}>
-                        <div style={{
-                            width: 8, height: 8, borderRadius: '50%',
-                            background: connected ? '#00ff82' : '#ff4444',
-                            boxShadow: connected ? '0 0 8px #00ff82' : '0 0 8px #ff4444',
-                            animation: 'pulse 1.4s infinite',
-                        }} />
-                        <span style={{ color: connected ? '#00ff82' : '#ff4444' }}>
-                            {connected ? 'SERVER OK' : 'DISCONNECTED'}
-                        </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.72rem', letterSpacing: '0.04em', padding: '6px 12px', borderRadius: 20, background: connected ? tint(C.ok, '12') : tint(C.danger, '12'), border: `1px solid ${connected ? tint(C.ok, '40') : tint(C.danger, '40')}` }}>
+                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? C.ok : C.danger, animation: 'pulse 1.4s infinite' }} />
+                        <span style={{ color: connected ? C.ok : C.danger, fontWeight: 600 }}>{connected ? 'Server Terhubung' : 'Terputus'}</span>
                     </div>
                 </div>
             </div>
 
-            {/* ── TAB NAV ── */}
-            <div style={{ display: 'flex', gap: 4, padding: '10px 28px 0', borderBottom: '1px solid rgba(0,255,130,0.1)', background: 'rgba(0,15,10,0.95)' }}>
-                {[['sensor', '📡 Sensor'], ['camera', '📷 Camera'], ['manage', '⚙ Manage']].map(([id, label]) => (
+            {/* TAB NAV */}
+            <div style={{ display: 'flex', gap: 2, padding: '0 28px', borderBottom: `1px solid ${T.border}`, background: T.panel }}>
+                {tabs.map(([id, label, Icon]) => (
                     <button key={id} onClick={() => { setActiveTab(id); if (id === 'camera') loadCamPhotos(); }}
                         style={{
-                            padding: '8px 20px', border: 'none', cursor: 'pointer',
-                            fontSize: '0.7rem', letterSpacing: '0.15em', fontFamily: '"Courier New", monospace',
-                            background: activeTab === id ? 'rgba(0,255,130,0.08)' : 'transparent',
-                            color: activeTab === id ? '#00ff82' : 'rgba(0,255,130,0.35)',
-                            borderBottom: activeTab === id ? '2px solid #00ff82' : '2px solid transparent',
-                            transition: 'all .15s',
-                        }}>{label}</button>
+                            display: 'flex', alignItems: 'center', gap: 7,
+                            padding: '13px 18px', border: 'none', cursor: 'pointer',
+                            fontSize: '0.78rem', fontWeight: 600, fontFamily: T.ui,
+                            background: 'transparent',
+                            color: activeTab === id ? T.brand : T.textMut,
+                            borderBottom: activeTab === id ? `2px solid ${T.brand}` : '2px solid transparent',
+                            marginBottom: -1, transition: 'color .15s',
+                        }}>
+                        <Icon size={15} /> {label}
+                    </button>
                 ))}
             </div>
 
             {/* ── SENSOR TAB ── */}
-            {activeTab === 'sensor' && <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {activeTab === 'sensor' && <div style={{ padding: '22px 28px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 18, alignItems: 'start' }}>
 
-                {/* Suhu Ruang */}
-                <div style={{ background: 'rgba(255,90,30,0.04)', border: '1px solid rgba(255,90,30,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Thermometer size={16} color="#ff6b35" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#ff6b35', textTransform: 'uppercase' }}>Suhu Ruang</span>
-                            {deviceNames.env && deviceAge[deviceNames.env] >= AGE_OFFLINE && staleTag}
-                        </div>
-                        <span style={{ fontSize: '2rem', fontWeight: 700, color: '#ff6b35', fontFamily: 'monospace' }}>
-                            {latestData?.temperature ?? '--'}<span style={{ fontSize: '0.9rem', opacity: 0.6 }}>°C</span>
-                        </span>
-                    </div>
-                    {tempHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,107,53,0.3)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={tempHistory} color="#ff6b35" label="SUHU RUANG" unit="°C" min={tempMin} max={tempMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(255,107,53,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>min {tempMin}° · max {tempMax}°</span>
-                    </div>
-                </div>
+                {sensorCard(<>
+                    {cardHead(Thermometer, C.roomTemp, 'Suhu Ruang', deviceNames.env && deviceAge[deviceNames.env] >= AGE_OFFLINE && staleTag)}
+                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.temperature, '°C', C.roomTemp)}</div>
+                    {tempHistory.length === 0 ? waitBox() : <ECGChart data={tempHistory} color={C.roomTemp} min={tempMin} max={tempMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${tempMin}° · maks ${tempMax}°`)}
+                </>)}
 
-                {/* Humidity */}
-                <div style={{ background: 'rgba(0,180,255,0.04)', border: '1px solid rgba(0,180,255,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Droplets size={16} color="#00b4ff" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00b4ff', textTransform: 'uppercase' }}>Humidity</span>
-                            {deviceNames.env && deviceAge[deviceNames.env] >= AGE_OFFLINE && staleTag}
-                        </div>
-                        <span style={{ fontSize: '2rem', fontWeight: 700, color: '#00b4ff', fontFamily: 'monospace' }}>
-                            {latestData?.humidity ?? '--'}<span style={{ fontSize: '0.9rem', opacity: 0.6 }}>%</span>
-                        </span>
-                    </div>
-                    {humidHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,180,255,0.3)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={humidHistory} color="#00b4ff" label="HUMIDITY" unit="%" min={humidMin} max={humidMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(0,180,255,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>min {humidMin}% · max {humidMax}%</span>
-                    </div>
-                </div>
+                {sensorCard(<>
+                    {cardHead(Droplets, C.humid, 'Kelembapan', deviceNames.env && deviceAge[deviceNames.env] >= AGE_OFFLINE && staleTag)}
+                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.humidity, '%', C.humid)}</div>
+                    {humidHistory.length === 0 ? waitBox() : <ECGChart data={humidHistory} color={C.humid} min={humidMin} max={humidMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${humidMin}% · maks ${humidMax}%`)}
+                </>)}
 
-                {/* TDS */}
-                <div style={{ background: 'rgba(160,80,255,0.04)', border: '1px solid rgba(160,80,255,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Beaker size={16} color="#a050ff" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#a050ff', textTransform: 'uppercase' }}>TDS</span>
-                            {deviceNames.tds && deviceAge[deviceNames.tds] >= AGE_OFFLINE && staleTag}
-                        </div>
-                        <span style={{ fontSize: '2rem', fontWeight: 700, color: '#a050ff', fontFamily: 'monospace' }}>
-                            {latestData?.tds ?? '--'}<span style={{ fontSize: '0.9rem', opacity: 0.6 }}>ppm</span>
-                        </span>
-                    </div>
-                    {tdsHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(160,80,255,0.3)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={tdsHistory} color="#a050ff" label="TDS" unit="ppm" min={tdsMin} max={tdsMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(160,80,255,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>min {tdsMin} ppm · max {tdsMax} ppm</span>
-                    </div>
-                </div>
+                {sensorCard(<>
+                    {cardHead(Beaker, C.tds, 'TDS', deviceNames.tds && deviceAge[deviceNames.tds] >= AGE_OFFLINE && staleTag)}
+                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.tds, 'ppm', C.tds)}</div>
+                    {tdsHistory.length === 0 ? waitBox() : <ECGChart data={tdsHistory} color={C.tds} min={tdsMin} max={tdsMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${tdsMin} · maks ${tdsMax} ppm`)}
+                </>)}
 
-                {/* pH */}
-                <div style={{ background: 'rgba(0,229,176,0.04)', border: '1px solid rgba(0,229,176,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <FlaskConical size={16} color="#00e5b0" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00e5b0', textTransform: 'uppercase' }}>pH</span>
+                {sensorCard(<>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                            <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(C.ph, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}><FlaskConical size={16} color={C.ph} /></div>
+                            <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>pH</span>
                             {deviceNames.water && deviceAge[deviceNames.water] >= AGE_OFFLINE && staleTag}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
-                            <span style={{ fontSize: '2rem', fontWeight: 700, color: '#00e5b0', fontFamily: 'monospace' }}>{latestData?.ph ?? '--'}</span>
-                            {latestData?.alkalinity != null && (
-                                <span style={{ fontSize: '0.7rem', color: 'rgba(0,229,176,0.5)', letterSpacing: '0.1em' }}>Alk: {latestData.alkalinity} mg/L</span>
-                            )}
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
+                            {bigVal(latestData?.ph, '', C.ph)}
+                            {latestData?.alkalinity != null && <span style={{ fontSize: '0.68rem', color: T.textMut }}>Alk: {latestData.alkalinity} mg/L</span>}
                         </div>
                     </div>
-                    {phHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,229,176,0.3)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={phHistory} color="#00e5b0" label="PH" unit="" min={phMin} max={phMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(0,229,176,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>min {phMin} · max {phMax}</span>
-                    </div>
-                </div>
+                    {phHistory.length === 0 ? waitBox() : <ECGChart data={phHistory} color={C.ph} min={phMin} max={phMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${phMin} · maks ${phMax}`)}
+                </>)}
 
-                {/* Suhu Air */}
-                <div style={{ background: 'rgba(255,200,0,0.04)', border: '1px solid rgba(255,200,0,0.2)', borderRadius: 8, padding: '16px 16px 10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Waves size={16} color="#ffc800" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#ffc800', textTransform: 'uppercase' }}>Suhu Air</span>
-                            {deviceNames.water && deviceAge[deviceNames.water] >= AGE_OFFLINE && staleTag}
-                        </div>
-                        <span style={{ fontSize: '2rem', fontWeight: 700, color: '#ffc800', fontFamily: 'monospace' }}>
-                            {latestData?.waterTemp ?? '--'}<span style={{ fontSize: '0.9rem', opacity: 0.6 }}>°C</span>
-                        </span>
-                    </div>
-                    {waterTempHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,200,0,0.3)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={waterTempHistory} color="#ffc800" label="SUHU AIR" unit="°C" min={waterTempMin} max={waterTempMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(255,200,0,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>min {waterTempMin}° · max {waterTempMax}°</span>
-                    </div>
-                </div>
+                {sensorCard(<>
+                    {cardHead(Waves, C.waterTemp, 'Suhu Air', deviceNames.water && deviceAge[deviceNames.water] >= AGE_OFFLINE && staleTag)}
+                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.waterTemp, '°C', C.waterTemp)}</div>
+                    {waterTempHistory.length === 0 ? waitBox() : <ECGChart data={waterTempHistory} color={C.waterTemp} min={waterTempMin} max={waterTempMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${waterTempMin}° · maks ${waterTempMax}°`)}
+                </>)}
 
-                {/* Pump Status */}
-                <div style={{
-                    background: pumpBg,
-                    border: `1px solid ${pumpBorderColor}`,
-                    borderRadius: 8, padding: '16px 16px 10px',
-                    transition: 'border 0.4s, background 0.4s',
-                }}>
+                {/* Pompa */}
+                <div style={{ background: pumpBg, border: `1px solid ${pumpBorderColor}`, borderRadius: 12, padding: '18px 18px 12px', boxShadow: T.shadow, transition: 'border .4s, background .4s' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Zap size={16} color={pumpColor} />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: pumpColor, textTransform: 'uppercase' }}>
-                                esp-pump · Pompa Air
-                            </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                            <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(pumpColor, '16'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Zap size={16} color={pumpColor} /></div>
+                            <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>Pompa Air · esp-pump</span>
                             {deviceNames.pump && deviceAge[deviceNames.pump] >= AGE_OFFLINE && staleTag}
                         </div>
-                        {/* Big status badge */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                            <div style={{
-                                width: 10, height: 10, borderRadius: '50%',
-                                background: pumpColor,
-                                boxShadow: pumpOn ? `0 0 12px ${pumpColor}, 0 0 24px rgba(0,255,130,0.3)` : 'none',
-                                animation: pumpOn ? 'pulse 1s infinite' : 'none',
-                            }} />
-                            <span style={{
-                                fontSize: '1.8rem', fontWeight: 700,
-                                color: pumpColor, fontFamily: 'monospace',
-                                letterSpacing: '0.1em',
-                            }}>
-                                {pumpLabel}
-                            </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ width: 10, height: 10, borderRadius: '50%', background: pumpColor, animation: pumpOn ? 'pulse 1s infinite' : 'none' }} />
+                            <span style={{ fontSize: '1.7rem', fontWeight: 700, color: pumpColor, fontFamily: T.mono }}>{pumpLabel}</span>
                         </div>
                     </div>
-
-                    {/* Stats row */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 14 }}>
                         {[
-                            { label: 'Status',    value: pumpLabel,                                              unit: '' },
-                            { label: 'Last Seen', value: pumpAge != null ? `${pumpAge}` : '--',                  unit: 's ago' },
-                            { label: 'Timeout',   value: `${PUMP_AGE_OFFLINE}`,                                  unit: 's' },
+                            { label: 'Status', value: pumpLabel, unit: '' },
+                            { label: 'Terakhir', value: pumpAge != null ? `${pumpAge}` : '--', unit: 's lalu' },
+                            { label: 'Timeout', value: `${PUMP_AGE_OFFLINE}`, unit: 's' },
                         ].map(({ label, value, unit }) => (
-                            <div key={label} style={{
-                                background: `rgba(${pumpOn ? '0,255,130' : pumpNoData ? '100,100,100' : '255,68,68'},0.05)`,
-                                border: `1px solid ${pumpBorderColor}`,
-                                borderRadius: 6, padding: '10px 14px',
-                            }}>
-                                <div style={{ fontSize: '0.55rem', color: `${pumpColor}88`, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                                <div style={{ fontSize: '1.4rem', fontWeight: 700, color: pumpColor, fontFamily: 'monospace', lineHeight: 1 }}>
-                                    {value}<span style={{ fontSize: '0.75rem', opacity: 0.55, marginLeft: 2 }}>{unit}</span>
-                                </div>
+                            <div key={label} style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: '10px 12px' }}>
+                                <div style={{ fontSize: '0.55rem', color: T.textFaint, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: pumpColor, fontFamily: T.mono, lineHeight: 1 }}>{value}<span style={{ fontSize: '0.66rem', color: T.textFaint, marginLeft: 2 }}>{unit}</span></div>
                             </div>
                         ))}
                     </div>
-
-                    {/* Bar timeline */}
-                    <div style={{ fontSize: '0.55rem', color: `${pumpColor}66`, letterSpacing: '0.15em', marginBottom: 4 }}>
-                        PUMP TIMELINE · hijau=ON · abu=OFF
-                    </div>
-                    {pumpHistory.length === 0
-                        ? <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', color: `${pumpColor}44`, fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <PumpChart data={pumpHistory} color="#00ff82" />
-                    }
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: `${pumpColor}44`, marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>0 = OFF · 1 = ON</span>
-                    </div>
+                    <div style={{ fontSize: '0.55rem', color: T.textMut, letterSpacing: '0.06em', marginBottom: 4 }}>LINIMASA POMPA · isi = ON · kosong = OFF</div>
+                    {pumpHistory.length === 0 ? waitBox(60) : <PumpChart data={pumpHistory} color={C.pumpOn} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, '0 = OFF · 1 = ON')}
                 </div>
 
                 {/* Turbiditas */}
-                <div style={{
-                    background: latestData?.turbidity > 50 ? 'rgba(255,68,68,0.06)' :
-                        latestData?.turbidity > 25 ? 'rgba(255,140,0,0.05)' : 'rgba(0,200,255,0.04)',
-                    border: `1px solid ${turbStyle.border}`,
-                    borderRadius: 8, padding: '16px 16px 10px',
-                    transition: 'border 0.4s, background 0.4s',
-                }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Eye size={16} color="#00c8ff" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00c8ff', textTransform: 'uppercase' }}>SEN0175 · Turbiditas</span>
+                <div style={{ gridColumn: '1 / -1', background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 18px 12px', boxShadow: T.shadow }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                            <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(C.turb, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Eye size={16} color={C.turb} /></div>
+                            <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>Turbiditas · SEN0175</span>
                             {deviceNames.turbidity && deviceAge[deviceNames.turbidity] >= AGE_OFFLINE && staleTag}
                         </div>
-                        <span style={{
-                            fontSize: '0.65rem', padding: '3px 10px', borderRadius: 3,
-                            letterSpacing: '0.15em', fontWeight: 700,
-                            color: turbStyle.color, border: `1px solid ${turbStyle.border}`, background: turbStyle.bg,
-                            animation: latestData?.turbidity > 50 ? 'blink 0.8s infinite' : 'none',
-                        }}>
-                            {turbStyle.label}
-                        </span>
+                        <span style={{ fontSize: '0.66rem', padding: '4px 12px', borderRadius: 20, fontWeight: 700, letterSpacing: '0.04em', color: turbStyle.color, border: `1px solid ${turbStyle.border}`, background: turbStyle.bg, animation: latestData?.turbidity > 50 ? 'blink 0.9s infinite' : 'none' }}>{turbStyle.label}</span>
                     </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 16 }}>
                         {[
-                            { label: 'Turbidity', value: latestData?.turbidity != null ? latestData.turbidity : '--', unit: 'NTU' },
-                            { label: 'TSS',       value: latestData?.tss       != null ? latestData.tss       : '--', unit: 'mg/L' },
-                            { label: 'Clarity',   value: latestData?.clarity   != null ? latestData.clarity   : '--', unit: '%' },
-                            { label: 'Voltage',   value: turbidityData?.voltage != null ? Number(turbidityData.voltage).toFixed(3) : '--', unit: 'V' },
+                            { label: 'Turbidity', value: latestData?.turbidity ?? '--', unit: 'NTU' },
+                            { label: 'TSS', value: latestData?.tss ?? '--', unit: 'mg/L' },
+                            { label: 'Clarity', value: latestData?.clarity ?? '--', unit: '%' },
+                            { label: 'Voltage', value: turbidityData?.voltage != null ? Number(turbidityData.voltage).toFixed(3) : '--', unit: 'V' },
                         ].map(({ label, value, unit }) => (
-                            <div key={label} style={{ background: 'rgba(0,200,255,0.05)', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 6, padding: '10px 14px' }}>
-                                <div style={{ fontSize: '0.55rem', color: 'rgba(0,200,255,0.45)', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                                <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#00c8ff', fontFamily: 'monospace', lineHeight: 1 }}>
-                                    {value}<span style={{ fontSize: '0.75rem', opacity: 0.55, marginLeft: 2 }}>{unit}</span>
-                                </div>
+                            <div key={label} style={{ background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 8, padding: '10px 14px' }}>
+                                <div style={{ fontSize: '0.55rem', color: T.textFaint, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: C.turb, fontFamily: T.mono, lineHeight: 1 }}>{value}<span style={{ fontSize: '0.66rem', color: T.textFaint, marginLeft: 2 }}>{unit}</span></div>
                             </div>
                         ))}
                     </div>
-
-                    <div style={{ fontSize: '0.55rem', color: 'rgba(0,200,255,0.35)', letterSpacing: '0.15em', marginBottom: 4 }}>TURBIDITY (NTU)</div>
-                    {ntuHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,200,255,0.25)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={ntuHistory} color="#00c8ff" label="NTU" unit="NTU" min={ntuMin} max={ntuMax} />}
-
-                    <div style={{ fontSize: '0.55rem', color: 'rgba(0,255,130,0.35)', letterSpacing: '0.15em', margin: '10px 0 4px' }}>CLARITY (%)</div>
-                    {clarityHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,255,130,0.25)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={clarityHistory} color="#00ff82" label="CLARITY" unit="%" min={0} max={100} />}
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(0,200,255,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir</span>
-                        <span>NTU min {ntuMin} · max {ntuMax}</span>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+                        <div>
+                            <div style={{ fontSize: '0.55rem', color: T.textMut, letterSpacing: '0.06em', marginBottom: 4 }}>TURBIDITY (NTU)</div>
+                            {ntuHistory.length === 0 ? waitBox() : <ECGChart data={ntuHistory} color={C.turb} min={ntuMin} max={ntuMax} />}
+                        </div>
+                        <div>
+                            <div style={{ fontSize: '0.55rem', color: T.textMut, letterSpacing: '0.06em', marginBottom: 4 }}>CLARITY (%)</div>
+                            {clarityHistory.length === 0 ? waitBox() : <ECGChart data={clarityHistory} color={C.ok} min={0} max={100} />}
+                        </div>
                     </div>
                 </div>
 
-                {/* MiCS-5524 Gas Sensor */}
-                <div style={{
-                    background: gasData?.status === 'DANGER' ? 'rgba(255,68,68,0.06)' :
-                        gasData?.status === 'WARNING' ? 'rgba(255,200,0,0.05)' : 'rgba(255,140,0,0.04)',
-                    border: `1px solid ${gasStyle.border}`,
-                    borderRadius: 8, padding: '16px 16px 10px',
-                    transition: 'border 0.4s, background 0.4s',
-                }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Wind size={16} color="#ff8c00" />
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#ff8c00', textTransform: 'uppercase' }}>MiCS-5524 · Gas</span>
+                {/* Gas */}
+                <div style={{ gridColumn: '1 / -1', background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: '18px 18px 12px', boxShadow: T.shadow }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                            <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(C.gas, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Wind size={16} color={C.gas} /></div>
+                            <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>Gas · MiCS-5524</span>
                             {deviceNames.gas && deviceAge[deviceNames.gas] >= AGE_OFFLINE && staleTag}
                         </div>
-                        <span style={{
-                            fontSize: '0.65rem', padding: '3px 10px', borderRadius: 3,
-                            letterSpacing: '0.15em', fontWeight: 700,
-                            color: gasStyle.color, border: `1px solid ${gasStyle.border}`, background: gasStyle.bg,
-                            animation: gasData?.status === 'DANGER' ? 'blink 0.8s infinite' : 'none',
-                        }}>
-                            {gasData?.status ?? 'NO DATA'}
-                        </span>
+                        <span style={{ fontSize: '0.66rem', padding: '4px 12px', borderRadius: 20, fontWeight: 700, letterSpacing: '0.04em', color: gasStyle.color, border: `1px solid ${gasStyle.border}`, background: gasStyle.bg, animation: gasData?.status === 'DANGER' ? 'blink 0.9s infinite' : 'none' }}>{gasData?.status ?? 'NO DATA'}</span>
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 16 }}>
                         {[
-                            { label: 'ADC Raw',    value: gasData?.adc_raw    != null ? gasData.adc_raw                            : '--', unit: '' },
-                            { label: 'Voltage',    value: gasData?.voltage    != null ? Number(gasData.voltage).toFixed(3)          : '--', unit: 'V' },
-                            { label: 'Baseline V', value: gasData?.baseline_v != null ? Number(gasData.baseline_v).toFixed(3)       : '--', unit: 'V' },
-                            { label: 'Rs/Ro',      value: gasData?.rs_ro_ratio != null ? Number(gasData.rs_ro_ratio).toFixed(3)     : '--', unit: '' },
+                            { label: 'ADC Raw', value: gasData?.adc_raw ?? '--', unit: '' },
+                            { label: 'Voltage', value: gasData?.voltage != null ? Number(gasData.voltage).toFixed(3) : '--', unit: 'V' },
+                            { label: 'Baseline V', value: gasData?.baseline_v != null ? Number(gasData.baseline_v).toFixed(3) : '--', unit: 'V' },
+                            { label: 'Rs/Ro', value: gasData?.rs_ro_ratio != null ? Number(gasData.rs_ro_ratio).toFixed(3) : '--', unit: '' },
                         ].map(({ label, value, unit }) => (
-                            <div key={label} style={{ background: 'rgba(255,140,0,0.05)', border: '1px solid rgba(255,140,0,0.12)', borderRadius: 6, padding: '10px 14px' }}>
-                                <div style={{ fontSize: '0.55rem', color: 'rgba(255,140,0,0.45)', letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
-                                <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#ff8c00', fontFamily: 'monospace', lineHeight: 1 }}>
-                                    {value}<span style={{ fontSize: '0.75rem', opacity: 0.55, marginLeft: 2 }}>{unit}</span>
-                                </div>
+                            <div key={label} style={{ background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 8, padding: '10px 14px' }}>
+                                <div style={{ fontSize: '0.55rem', color: T.textFaint, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: C.gas, fontFamily: T.mono, lineHeight: 1 }}>{value}<span style={{ fontSize: '0.66rem', color: T.textFaint, marginLeft: 2 }}>{unit}</span></div>
                             </div>
                         ))}
                     </div>
                     {gasData?.gas_hint && (
-                        <div style={{ marginBottom: 14, padding: '8px 14px', background: 'rgba(255,140,0,0.06)', border: '1px solid rgba(255,140,0,0.15)', borderRadius: 6, fontSize: '0.7rem', color: 'rgba(255,180,80,0.85)', letterSpacing: '0.1em' }}>
-                            <span style={{ color: 'rgba(255,140,0,0.45)', marginRight: 8 }}>GAS HINT ›</span>
-                            {gasData.gas_hint}
+                        <div style={{ marginBottom: 14, padding: '9px 14px', background: tint(C.gas, '0c'), border: `1px solid ${tint(C.gas, '30')}`, borderRadius: 8, fontSize: '0.72rem', color: C.gas }}>
+                            <span style={{ color: T.textMut, marginRight: 8 }}>Catatan gas ›</span>{gasData.gas_hint}
                         </div>
                     )}
-                    {rsRoHistory.length === 0
-                        ? <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,140,0,0.25)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>MENUNGGU DATA...</div>
-                        : <ECGChart data={rsRoHistory} color="#ff8c00" label="Rs/Ro RATIO" unit="" min={rsRoMin} max={rsRoMax} />}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'rgba(255,140,0,0.3)', marginTop: 4, letterSpacing: '0.1em' }}>
-                        <span>← {MAX_POINTS} pembacaan terakhir (Rs/Ro ratio)</span>
-                        <span>min {rsRoMin} · max {rsRoMax}</span>
-                    </div>
+                    {rsRoHistory.length === 0 ? waitBox() : <ECGChart data={rsRoHistory} color={C.gas} min={rsRoMin} max={rsRoMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir (Rs/Ro)`, `min ${rsRoMin} · maks ${rsRoMax}`)}
                 </div>
 
-                {/* Log Table */}
-                <div style={{ border: '1px solid rgba(0,255,130,0.1)', borderRadius: 8, overflow: 'hidden' }}>
-                    <div style={{ padding: '10px 16px', borderBottom: '1px solid rgba(0,255,130,0.1)', fontSize: '0.65rem', letterSpacing: '0.2em', color: 'rgba(0,255,130,0.4)', textTransform: 'uppercase' }}>
-                        Sensor Log · {history.length} records
+                {/* Log Tabel */}
+                <div style={{ gridColumn: '1 / -1', background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, overflow: 'hidden', boxShadow: T.shadow }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}>
+                        <span style={{ fontSize: '0.72rem', fontWeight: 600, color: T.text }}>Log Sensor · {history.length} catatan</span>
+                        <button onClick={downloadHistoryCSV} disabled={!history.length} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: tint(T.brand, '10'), border: `1px solid ${tint(T.brand, '40')}`, borderRadius: 6, color: T.brand, cursor: history.length ? 'pointer' : 'not-allowed', fontSize: '0.68rem', fontWeight: 600, fontFamily: T.ui, opacity: history.length ? 1 : 0.5 }}>
+                            <FileDown size={13} /> Unduh CSV
+                        </button>
                     </div>
                     <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
                             <thead>
-                                <tr style={{ borderBottom: '1px solid rgba(0,255,130,0.08)' }}>
-                                    {['Waktu', 'Suhu Ruang (°C)', 'Suhu Air (°C)', 'Kelembaban (%)', 'TDS (ppm)', 'pH', 'Alkalinitas', 'Turbidity (NTU)', 'TSS (mg/L)', 'Clarity (%)', 'Pompa', 'Status'].map(h => (
-                                        <th key={h} style={{ padding: '8px 16px', textAlign: 'left', color: 'rgba(0,255,130,0.35)', fontWeight: 400, letterSpacing: '0.1em', whiteSpace: 'nowrap' }}>{h}</th>
+                                <tr style={{ borderBottom: `1px solid ${T.border}`, background: T.panelSubtle }}>
+                                    {['Waktu', 'Suhu Ruang', 'Suhu Air', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa', 'Status'].map(h => (
+                                        <th key={h} style={{ padding: '9px 14px', textAlign: 'left', color: T.textMut, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
                                     ))}
                                 </tr>
                             </thead>
@@ -781,45 +909,31 @@ export default function IoTDashboard() {
                                 {history.length > 0 ? [...history].reverse().map((d, i) => {
                                     const ts = turbidityStatusStyle(d.turbidity ?? null);
                                     const rowPumpOn = d.pumping === 1;
-                                    const rowPumpColor = d.pumping === null ? 'rgba(255,255,255,0.2)' : rowPumpOn ? '#00ff82' : '#ff4444';
+                                    const rowPumpColor = d.pumping == null ? T.textFaint : rowPumpOn ? C.ok : C.danger;
                                     return (
-                                        <tr key={i} style={{ borderBottom: '1px solid rgba(0,255,130,0.05)', background: i === 0 ? 'rgba(0,255,130,0.025)' : 'transparent' }}>
-                                            <td style={{ padding: '8px 16px', color: 'rgba(200,255,220,0.45)', whiteSpace: 'nowrap' }}>{d.timestamp}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#ff6b35' : 'rgba(255,107,53,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.temperature ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#ffc800' : 'rgba(255,200,0,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.waterTemp ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00b4ff' : 'rgba(0,180,255,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.humidity ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#a050ff' : 'rgba(160,80,255,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.tds ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00e5b0' : 'rgba(0,229,176,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.ph ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00e5b0' : 'rgba(0,229,176,0.35)' }}>{d.alkalinity != null ? `${d.alkalinity} mg/L` : '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00c8ff' : 'rgba(0,200,255,0.45)', fontWeight: i === 0 ? 700 : 400 }}>{d.turbidity ?? '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00c8ff' : 'rgba(0,200,255,0.35)' }}>{d.tss != null ? `${d.tss}` : '--'}</td>
-                                            <td style={{ padding: '8px 16px', color: i === 0 ? '#00ff82' : 'rgba(0,255,130,0.35)' }}>{d.clarity != null ? `${d.clarity}%` : '--'}</td>
-                                            <td style={{ padding: '8px 16px' }}>
+                                        <tr key={i} style={{ borderBottom: `1px solid ${T.border}`, background: i === 0 ? tint(T.brand, '08') : 'transparent' }}>
+                                            <td style={{ padding: '9px 14px', color: T.textMut, whiteSpace: 'nowrap', fontFamily: T.mono }}>{d.timestamp}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.roomTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.temperature ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.waterTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.waterTemp ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.humid : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.humidity ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.tds : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.tds ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.ph : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.ph ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: T.textMut, fontFamily: T.mono }}>{d.alkalinity != null ? `${d.alkalinity}` : '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.turb : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.turbidity ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: T.textMut, fontFamily: T.mono }}>{d.tss ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: T.textMut, fontFamily: T.mono }}>{d.clarity != null ? `${d.clarity}%` : '--'}</td>
+                                            <td style={{ padding: '9px 14px' }}>
                                                 {d.pumping != null ? (
-                                                    <span style={{
-                                                        fontSize: '0.6rem', padding: '2px 8px', borderRadius: 3,
-                                                        letterSpacing: '0.1em', fontWeight: 700,
-                                                        color: rowPumpColor,
-                                                        border: `1px solid ${rowPumpColor}55`,
-                                                        background: `${rowPumpColor}11`,
-                                                    }}>
-                                                        {rowPumpOn ? 'ON' : 'OFF'}
-                                                    </span>
-                                                ) : <span style={{ color: 'rgba(255,255,255,0.15)' }}>--</span>}
+                                                    <span style={{ fontSize: '0.6rem', padding: '2px 8px', borderRadius: 4, fontWeight: 700, color: rowPumpColor, border: `1px solid ${rowPumpColor}44`, background: `${rowPumpColor}11` }}>{rowPumpOn ? 'ON' : 'OFF'}</span>
+                                                ) : <span style={{ color: T.textFaint }}>--</span>}
                                             </td>
-                                            <td style={{ padding: '8px 16px' }}>
-                                                <span style={{ fontSize: '0.6rem', padding: '2px 8px', borderRadius: 3, letterSpacing: '0.1em', border: `1px solid ${ts.border}`, color: ts.color, background: ts.bg }}>
-                                                    {d.turbidity != null ? ts.label : 'NORMAL'}
-                                                </span>
+                                            <td style={{ padding: '9px 14px' }}>
+                                                <span style={{ fontSize: '0.6rem', padding: '2px 8px', borderRadius: 4, border: `1px solid ${ts.border}`, color: ts.color, background: ts.bg }}>{d.turbidity != null ? ts.label : 'NORMAL'}</span>
                                             </td>
                                         </tr>
                                     );
                                 }) : (
-                                    <tr>
-                                        <td colSpan={12} style={{ padding: '28px', textAlign: 'center', color: 'rgba(0,255,130,0.18)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>
-                                            MENUNGGU DATA DARI ESP8266...
-                                        </td>
-                                    </tr>
+                                    <tr><td colSpan={12} style={{ padding: '28px', textAlign: 'center', color: T.textFaint, fontSize: '0.72rem' }}>Menunggu data dari ESP8266…</td></tr>
                                 )}
                             </tbody>
                         </table>
@@ -828,117 +942,145 @@ export default function IoTDashboard() {
 
             </div>}
 
+            {/* ── ANALISA TAB ── */}
+            {activeTab === 'analisa' && <div style={{ padding: '22px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: T.text }}>Analisa Data Real-Time</h2>
+                        <p style={{ margin: '4px 0 0', fontSize: '0.74rem', color: T.textMut }}>Statistik dihitung langsung dari {MAX_POINTS} pembacaan terakhir tiap parameter — diperbarui setiap 5 detik.</p>
+                    </div>
+                    <button onClick={downloadAnalysisCSV} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', background: T.brand, border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer', fontSize: '0.76rem', fontWeight: 600, fontFamily: T.ui, boxShadow: T.shadow }}>
+                        <Download size={15} /> Unduh Analisa (CSV)
+                    </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+                    {analysisRows.map(r => (
+                        <StatCard key={r.key} icon={r.icon} label={r.label} unit={r.unit} color={r.color} stats={r.stats} />
+                    ))}
+                </div>
+
+                {/* Tabel ringkas */}
+                <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, overflow: 'hidden', boxShadow: T.shadow }}>
+                    <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}`, fontSize: '0.72rem', fontWeight: 600, color: T.text }}>Ringkasan Statistik</div>
+                    <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
+                            <thead>
+                                <tr style={{ borderBottom: `1px solid ${T.border}`, background: T.panelSubtle }}>
+                                    {['Parameter', 'Terkini', 'Rata-rata', 'Min', 'Maks', 'Std', 'CV %', 'Tren'].map(h => (
+                                        <th key={h} style={{ padding: '9px 14px', textAlign: h === 'Parameter' ? 'left' : 'right', color: T.textMut, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {analysisRows.filter(r => r.stats).map(r => (
+                                    <tr key={r.key} style={{ borderBottom: `1px solid ${T.border}` }}>
+                                        <td style={{ padding: '9px 14px', color: T.text, fontWeight: 600 }}>
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                                                <span style={{ width: 8, height: 8, borderRadius: 2, background: r.color, display: 'inline-block' }} />
+                                                {r.label}<span style={{ color: T.textFaint, fontWeight: 400 }}> {r.unit}</span>
+                                            </span>
+                                        </td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, fontWeight: 700, color: r.color }}>{fmt(r.stats.current, 2)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, color: T.text }}>{fmt(r.stats.mean, 2)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, color: T.textMut }}>{fmt(r.stats.min, 1)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, color: T.textMut }}>{fmt(r.stats.max, 1)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, color: T.textMut }}>{fmt(r.stats.std, 2)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: T.mono, color: T.textMut }}>{fmt(r.stats.cv, 1)}</td>
+                                        <td style={{ padding: '9px 14px', textAlign: 'right' }}><TrendBadge trend={r.stats.trend} /></td>
+                                    </tr>
+                                ))}
+                                {analysisRows.every(r => !r.stats) && (
+                                    <tr><td colSpan={8} style={{ padding: '28px', textAlign: 'center', color: T.textFaint }}>Menunggu data untuk dianalisa…</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div style={{ fontSize: '0.66rem', color: T.textFaint, lineHeight: 1.6 }}>
+                    Std = simpangan baku · CV = koefisien variasi (std ÷ rata-rata × 100%) sebagai ukuran kestabilan relatif · Tren ditentukan dari kemiringan regresi linear pembacaan terakhir.
+                </div>
+            </div>}
+
             {/* ── CAMERA TAB ── */}
             {activeTab === 'camera' && (
-                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-
+                <div style={{ padding: '22px 28px', display: 'flex', flexDirection: 'column', gap: 18 }}>
                     {camToast && (
-                        <div style={{
-                            position: 'fixed', bottom: 24, right: 24, zIndex: 999,
-                            background: '#0d1a14', border: `1px solid ${camToast.type === 'error' ? '#ff4444' : '#00ff82'}`,
-                            borderRadius: 8, padding: '12px 16px', fontSize: '0.75rem',
-                            color: camToast.type === 'error' ? '#ff4444' : '#00ff82',
-                            fontFamily: '"Courier New", monospace', letterSpacing: '0.05em',
-                        }}>{camToast.msg}</div>
+                        <div style={{ position: 'fixed', bottom: 24, left: 24, zIndex: 999, background: T.panel, border: `1px solid ${camToast.type === 'error' ? tint(C.danger, '55') : tint(C.ok, '55')}`, borderRadius: 10, padding: '12px 16px', fontSize: '0.76rem', color: camToast.type === 'error' ? C.danger : C.ok, boxShadow: T.shadowMd, fontWeight: 500 }}>{camToast.msg}</div>
                     )}
-
                     {camLightbox && (
-                        <div onClick={() => setCamLightbox(null)} style={{
-                            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)', zIndex: 200,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}>
-                            <img src={camLightbox} alt="preview" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
-                            <span onClick={() => setCamLightbox(null)} style={{ position: 'absolute', top: 20, right: 24, fontSize: 28, color: 'rgba(0,255,130,0.4)', cursor: 'pointer' }}>✕</span>
+                        <div onClick={() => setCamLightbox(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.85)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <img src={camLightbox} alt="pratinjau" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
+                            <span onClick={() => setCamLightbox(null)} style={{ position: 'absolute', top: 20, right: 24, fontSize: 28, color: '#fff', cursor: 'pointer' }}>✕</span>
                         </div>
                     )}
 
                     {/* Preview */}
-                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
+                    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: 20, boxShadow: T.shadow }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                            <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase' }}>📷 Live Preview</span>
+                            <Eye size={16} color={T.brand} />
+                            <span style={{ fontSize: '0.76rem', fontWeight: 600, color: T.text }}>Pratinjau Langsung</span>
                         </div>
-                        <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', background: '#000', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(0,255,130,0.15)', aspectRatio: '4/3', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            {camPreviewUrl
-                                ? <img src={camPreviewUrl} alt="preview" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                                : <div style={{ color: 'rgba(0,255,130,0.2)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>TEKAN START PREVIEW</div>
-                            }
+                        <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', background: '#0f172a', borderRadius: 10, overflow: 'hidden', border: `1px solid ${T.border}`, aspectRatio: '4/3', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {camPreviewUrl ? <img src={camPreviewUrl} alt="pratinjau" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ color: T.textFaint, fontSize: '0.72rem' }}>Tekan Mulai Pratinjau</div>}
                         </div>
-                        {camPreviewFile && <div style={{ textAlign: 'center', marginTop: 8, fontSize: '0.65rem', color: 'rgba(0,255,130,0.35)', letterSpacing: '0.1em' }}>{camPreviewFile}</div>}
-
+                        {camPreviewFile && <div style={{ textAlign: 'center', marginTop: 8, fontSize: '0.66rem', color: T.textMut, fontFamily: T.mono }}>{camPreviewFile}</div>}
                         <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap', justifyContent: 'center' }}>
                             {!camPreviewTimer
-                                ? <button onClick={startCamPreview} style={{ padding: '8px 18px', background: 'rgba(0,255,130,0.1)', border: '1px solid rgba(0,255,130,0.4)', borderRadius: 6, color: '#00ff82', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace' }}>▶ START</button>
-                                : <button onClick={stopCamPreview}  style={{ padding: '8px 18px', background: 'rgba(255,68,68,0.1)',  border: '1px solid rgba(255,68,68,0.4)',  borderRadius: 6, color: '#ff4444', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace' }}>⏹ STOP</button>
-                            }
-                            <button onClick={() => { camCapture(); setTimeout(fetchLatestPreview, 600); }} disabled={camCapturing}
-                                style={{ padding: '8px 18px', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.4)', borderRadius: 6, color: '#3b82f6', cursor: 'pointer', fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace', opacity: camCapturing ? 0.5 : 1 }}>
-                                {camCapturing ? '⏳...' : '📷 AMBIL & TAMPILKAN'}
-                            </button>
+                                ? <button onClick={startCamPreview} style={{ padding: '9px 18px', background: tint(C.ok, '12'), border: `1px solid ${tint(C.ok, '45')}`, borderRadius: 7, color: C.ok, cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, fontFamily: T.ui }}>▶ Mulai</button>
+                                : <button onClick={stopCamPreview} style={{ padding: '9px 18px', background: tint(C.danger, '12'), border: `1px solid ${tint(C.danger, '45')}`, borderRadius: 7, color: C.danger, cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, fontFamily: T.ui }}>⏹ Berhenti</button>}
+                            <button onClick={() => { camCapture(); setTimeout(fetchLatestPreview, 600); }} disabled={camCapturing} style={{ padding: '9px 18px', background: tint(T.brand, '10'), border: `1px solid ${tint(T.brand, '45')}`, borderRadius: 7, color: T.brand, cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, fontFamily: T.ui, opacity: camCapturing ? 0.5 : 1 }}>{camCapturing ? '⏳ …' : '📷 Ambil & Tampilkan'}</button>
                         </div>
-
                         <div style={{ display: 'flex', gap: 16, marginTop: 14, flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <span style={{ fontSize: '0.65rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>INTERVAL:</span>
-                                <select value={camPreviewInterval} onChange={e => changePreviewInterval(Number(e.target.value))}
-                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '4px 8px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
-                                    <option value={1000}>1 detik</option>
-                                    <option value={3000}>3 detik</option>
-                                    <option value={5000}>5 detik</option>
-                                    <option value={10000}>10 detik</option>
-                                    <option value={60000}>1 menit</option>
-                                    <option value={300000}>5 menit</option>
-                                    <option value={600000}>10 menit</option>
+                                <span style={{ fontSize: '0.66rem', color: T.textMut }}>Interval:</span>
+                                <select value={camPreviewInterval} onChange={e => changePreviewInterval(Number(e.target.value))} style={{ background: T.panel, border: `1px solid ${T.border}`, color: T.text, padding: '5px 8px', borderRadius: 6, fontSize: '0.72rem', fontFamily: T.ui }}>
+                                    <option value={1000}>1 detik</option><option value={3000}>3 detik</option><option value={5000}>5 detik</option><option value={10000}>10 detik</option><option value={60000}>1 menit</option><option value={300000}>5 menit</option><option value={600000}>10 menit</option>
                                 </select>
                             </div>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.65rem', letterSpacing: '0.1em', color: 'rgba(0,255,130,0.5)' }}>
-                                <input type="checkbox" checked={camAutoCapture} onChange={e => toggleAutoCapture(e.target.checked)}
-                                    style={{ accentColor: '#00ff82', width: 14, height: 14 }} />
-                                AUTO-CAPTURE
-                                <span style={{ color: camAutoCapture ? '#00ff82' : 'rgba(0,255,130,0.3)' }}>{camAutoCapture ? 'ON' : 'OFF'}</span>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: '0.68rem', color: T.textMut }}>
+                                <input type="checkbox" checked={camAutoCapture} onChange={e => toggleAutoCapture(e.target.checked)} style={{ accentColor: T.brand, width: 14, height: 14 }} />
+                                Auto-Capture <span style={{ color: camAutoCapture ? C.ok : T.textFaint, fontWeight: 600 }}>{camAutoCapture ? 'ON' : 'OFF'}</span>
                             </label>
                         </div>
                     </div>
 
-                    {/* Gallery */}
-                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
+                    {/* Galeri */}
+                    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: 20, boxShadow: T.shadow }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <span style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase' }}>🖼 Galeri</span>
-                                <span style={{ fontSize: '0.6rem', padding: '2px 8px', border: '1px solid rgba(0,255,130,0.2)', borderRadius: 10, color: 'rgba(0,255,130,0.5)', letterSpacing: '0.1em' }}>{camPhotos.length} foto</span>
-                                {camSelected.size > 0 && <span style={{ fontSize: '0.6rem', padding: '2px 8px', border: '1px solid rgba(59,130,246,0.4)', borderRadius: 10, color: '#3b82f6', letterSpacing: '0.1em' }}>{camSelected.size} dipilih</span>}
+                                <span style={{ fontSize: '0.76rem', fontWeight: 600, color: T.text }}>Galeri</span>
+                                <span style={{ fontSize: '0.62rem', padding: '2px 8px', border: `1px solid ${T.border}`, borderRadius: 10, color: T.textMut }}>{camPhotos.length} foto</span>
+                                {camSelected.size > 0 && <span style={{ fontSize: '0.62rem', padding: '2px 8px', border: `1px solid ${tint(T.brand, '45')}`, borderRadius: 10, color: T.brand }}>{camSelected.size} dipilih</span>}
                             </div>
                             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                                 {camSelectMode && <>
-                                    <button onClick={toggleSelectAll} style={{ padding: '5px 12px', background: 'rgba(0,255,130,0.08)', border: '1px solid rgba(0,255,130,0.3)', borderRadius: 5, color: '#00ff82', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>☑ SEMUA</button>
-                                    <button onClick={bulkDownload}   style={{ padding: '5px 12px', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.3)', borderRadius: 5, color: '#3b82f6', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>⬇ ZIP</button>
-                                    <button onClick={bulkDelete}     style={{ padding: '5px 12px', background: 'rgba(255,68,68,0.08)',  border: '1px solid rgba(255,68,68,0.3)',  borderRadius: 5, color: '#ff4444', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>✕ HAPUS</button>
+                                    <button onClick={toggleSelectAll} style={{ padding: '6px 12px', background: tint(C.ok, '10'), border: `1px solid ${tint(C.ok, '35')}`, borderRadius: 6, color: C.ok, cursor: 'pointer', fontSize: '0.66rem', fontWeight: 600, fontFamily: T.ui }}>☑ Semua</button>
+                                    <button onClick={bulkDownload} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: tint(T.brand, '10'), border: `1px solid ${tint(T.brand, '40')}`, borderRadius: 6, color: T.brand, cursor: 'pointer', fontSize: '0.66rem', fontWeight: 600, fontFamily: T.ui }}><Download size={12} /> Unduh ZIP</button>
+                                    <button onClick={bulkDelete} style={{ padding: '6px 12px', background: tint(C.danger, '10'), border: `1px solid ${tint(C.danger, '35')}`, borderRadius: 6, color: C.danger, cursor: 'pointer', fontSize: '0.66rem', fontWeight: 600, fontFamily: T.ui }}>✕ Hapus</button>
                                 </>}
-                                <button onClick={() => { setCamSelectMode(s => !s); setCamSelected(new Set()); }}
-                                    style={{ padding: '5px 12px', background: camSelectMode ? 'rgba(255,68,68,0.08)' : 'rgba(0,255,130,0.05)', border: `1px solid ${camSelectMode ? 'rgba(255,68,68,0.3)' : 'rgba(0,255,130,0.2)'}`, borderRadius: 5, color: camSelectMode ? '#ff4444' : 'rgba(0,255,130,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>
-                                    {camSelectMode ? '✕ BATAL' : '☐ PILIH'}
-                                </button>
-                                <button onClick={loadCamPhotos} style={{ padding: '5px 12px', background: 'rgba(0,255,130,0.05)', border: '1px solid rgba(0,255,130,0.2)', borderRadius: 5, color: 'rgba(0,255,130,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>↻ REFRESH</button>
+                                <button onClick={() => { setCamSelectMode(s => !s); setCamSelected(new Set()); }} style={{ padding: '6px 12px', background: camSelectMode ? tint(C.danger, '10') : T.panelSubtle, border: `1px solid ${camSelectMode ? tint(C.danger, '35') : T.border}`, borderRadius: 6, color: camSelectMode ? C.danger : T.textMut, cursor: 'pointer', fontSize: '0.66rem', fontWeight: 600, fontFamily: T.ui }}>{camSelectMode ? '✕ Batal' : '☐ Pilih'}</button>
+                                <button onClick={loadCamPhotos} style={{ padding: '6px 12px', background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 6, color: T.textMut, cursor: 'pointer', fontSize: '0.66rem', fontWeight: 600, fontFamily: T.ui }}>↻ Segarkan</button>
                             </div>
                         </div>
-
                         {camPhotos.length === 0
-                            ? <div style={{ textAlign: 'center', padding: '40px 20px', color: 'rgba(0,255,130,0.2)', fontSize: '0.7rem', letterSpacing: '0.2em' }}>BELUM ADA FOTO</div>
+                            ? <div style={{ textAlign: 'center', padding: '40px 20px', color: T.textFaint, fontSize: '0.72rem' }}>Belum ada foto</div>
                             : <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
                                 {camPhotos.map(p => {
                                     const imgUrl = '/cam/photo?file=' + encodeURIComponent(p.path);
                                     const sel = camSelected.has(p.name);
                                     return (
-                                        <div key={p.name} style={{ background: '#0a1510', borderRadius: 8, overflow: 'hidden', border: `1px solid ${sel ? '#3b82f6' : 'rgba(0,255,130,0.12)'}`, transition: 'border-color .15s' }}>
-                                            <div onClick={() => camSelectMode ? toggleCamSelect(p.name) : setCamLightbox(imgUrl)}
-                                                style={{ width: '100%', aspectRatio: '4/3', position: 'relative', overflow: 'hidden', background: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                                <img src={imgUrl} alt={p.name} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.target.style.display='none'; }} />
-                                                {sel && <div style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: '50%', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff' }}>✓</div>}
+                                        <div key={p.name} style={{ background: T.panel, borderRadius: 10, overflow: 'hidden', border: `1px solid ${sel ? T.brand : T.border}`, transition: 'border-color .15s', boxShadow: T.shadow }}>
+                                            <div onClick={() => camSelectMode ? toggleCamSelect(p.name) : setCamLightbox(imgUrl)} style={{ width: '100%', aspectRatio: '4/3', position: 'relative', overflow: 'hidden', background: '#0f172a', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                <img src={imgUrl} alt={p.name} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.target.style.display = 'none'; }} />
+                                                {sel && <div style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: '50%', background: T.brand, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: '#fff' }}>✓</div>}
                                             </div>
                                             <div style={{ padding: '8px 10px' }}>
-                                                <div style={{ fontSize: '0.65rem', fontFamily: 'monospace', color: 'rgba(0,255,130,0.4)', marginBottom: 4 }}>{p.name}</div>
-                                                <div style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.25)', marginBottom: 7 }}>{Math.round(p.size / 1024)} KB</div>
+                                                <div style={{ fontSize: '0.64rem', fontFamily: T.mono, color: T.textMut, marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+                                                <div style={{ fontSize: '0.6rem', color: T.textFaint, marginBottom: 7 }}>{Math.round(p.size / 1024)} KB</div>
                                                 <div style={{ display: 'flex', gap: 5 }}>
-                                                    <a href={imgUrl} download={p.name} style={{ flex: 1, padding: '4px 6px', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, color: '#3b82f6', fontSize: '0.6rem', textAlign: 'center', textDecoration: 'none', fontFamily: '"Courier New", monospace' }}>⬇ DL</a>
+                                                    <a href={imgUrl} download={p.name} style={{ flex: 1, padding: '5px 6px', background: tint(T.brand, '10'), border: `1px solid ${tint(T.brand, '30')}`, borderRadius: 5, color: T.brand, fontSize: '0.62rem', fontWeight: 600, textAlign: 'center', textDecoration: 'none', fontFamily: T.ui }}>⬇ Unduh</a>
                                                     <button onClick={async () => {
                                                         if (!window.confirm('Hapus ' + p.name + '?')) return;
                                                         try {
@@ -946,42 +1088,35 @@ export default function IoTDashboard() {
                                                             if (data.success) { showCamToast('Dihapus: ' + p.name); loadCamPhotos(); }
                                                             else showCamToast('Gagal hapus', 'error');
                                                         } catch { showCamToast('Koneksi gagal', 'error'); }
-                                                    }} style={{ flex: 1, padding: '4px 6px', background: 'rgba(255,68,68,0.08)', border: '1px solid rgba(255,68,68,0.25)', borderRadius: 4, color: '#ff4444', fontSize: '0.6rem', cursor: 'pointer', fontFamily: '"Courier New", monospace' }}>✕</button>
+                                                    }} style={{ flex: 1, padding: '5px 6px', background: tint(C.danger, '10'), border: `1px solid ${tint(C.danger, '30')}`, borderRadius: 5, color: C.danger, fontSize: '0.62rem', fontWeight: 600, cursor: 'pointer', fontFamily: T.ui }}>✕ Hapus</button>
                                                 </div>
                                             </div>
                                         </div>
                                     );
                                 })}
-                            </div>
-                        }
+                            </div>}
                     </div>
-
                 </div>
             )}
 
-
             {/* ── MANAGE TAB ── */}
             {activeTab === 'manage' && (
-                <div style={{ padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 700 }}>
-
+                <div style={{ padding: '22px 28px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 760 }}>
                     {manageMsg && (
-                        <div style={{
-                            padding: '12px 16px', borderRadius: 8, fontSize: '0.75rem',
-                            fontFamily: '"Courier New", monospace', letterSpacing: '0.05em',
-                            background: manageMsg.type === 'error' ? 'rgba(255,68,68,0.08)' : 'rgba(0,255,130,0.08)',
-                            border: `1px solid ${manageMsg.type === 'error' ? 'rgba(255,68,68,0.4)' : 'rgba(0,255,130,0.4)'}`,
-                            color: manageMsg.type === 'error' ? '#ff4444' : '#00ff82',
-                        }}>{manageMsg.text}</div>
+                        <div style={{ padding: '12px 16px', borderRadius: 10, fontSize: '0.76rem', fontWeight: 500, background: manageMsg.type === 'error' ? tint(C.danger, '10') : tint(C.ok, '10'), border: `1px solid ${manageMsg.type === 'error' ? tint(C.danger, '45') : tint(C.ok, '45')}`, color: manageMsg.type === 'error' ? C.danger : C.ok }}>{manageMsg.text}</div>
                     )}
 
-                    {/* Export CSV */}
-                    <div style={{ background: 'rgba(0,200,130,0.03)', border: '1px solid rgba(0,255,130,0.15)', borderRadius: 8, padding: 20 }}>
-                        <div style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#00ff82', textTransform: 'uppercase', marginBottom: 16 }}>⬇ Export CSV</div>
-                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                <span style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>DEVICE</span>
-                                <select value={csvDevice} onChange={e => setCsvDevice(e.target.value)}
-                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '6px 10px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
+                    {/* Export CSV server */}
+                    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 12, padding: 22, boxShadow: T.shadow }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <Download size={16} color={T.brand} />
+                            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: T.text }}>Ekspor Data Sensor (CSV)</span>
+                        </div>
+                        <p style={{ margin: '0 0 16px', fontSize: '0.72rem', color: T.textMut }}>Unduh seluruh riwayat dari database server, sesuai device dan rentang waktu.</p>
+                        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-end' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                <span style={{ fontSize: '0.62rem', color: T.textMut, fontWeight: 600 }}>DEVICE</span>
+                                <select value={csvDevice} onChange={e => setCsvDevice(e.target.value)} style={{ background: T.panel, border: `1px solid ${T.border}`, color: T.text, padding: '8px 10px', borderRadius: 7, fontSize: '0.74rem', fontFamily: T.ui }}>
                                     <option value="all">Semua Device</option>
                                     <option value="esp-main">esp-main (Suhu/Humidity)</option>
                                     <option value="esp-tds">esp-tds (TDS)</option>
@@ -991,75 +1126,55 @@ export default function IoTDashboard() {
                                     <option value="esp-pump">esp-pump (Pompa)</option>
                                 </select>
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                <span style={{ fontSize: '0.6rem', color: 'rgba(0,255,130,0.4)', letterSpacing: '0.1em' }}>RANGE</span>
-                                <select value={csvDays} onChange={e => setCsvDays(Number(e.target.value))}
-                                    style={{ background: '#0d1a14', border: '1px solid rgba(0,255,130,0.2)', color: '#00ff82', padding: '6px 10px', borderRadius: 5, fontSize: '0.7rem', fontFamily: '"Courier New", monospace' }}>
-                                    <option value={1}>1 hari</option>
-                                    <option value={7}>7 hari</option>
-                                    <option value={30}>30 hari</option>
-                                    <option value={90}>90 hari</option>
-                                    <option value={9999}>Semua data</option>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                <span style={{ fontSize: '0.62rem', color: T.textMut, fontWeight: 600 }}>RENTANG</span>
+                                <select value={csvDays} onChange={e => setCsvDays(Number(e.target.value))} style={{ background: T.panel, border: `1px solid ${T.border}`, color: T.text, padding: '8px 10px', borderRadius: 7, fontSize: '0.74rem', fontFamily: T.ui }}>
+                                    <option value={1}>1 hari</option><option value={7}>7 hari</option><option value={30}>30 hari</option><option value={90}>90 hari</option><option value={9999}>Semua data</option>
                                 </select>
                             </div>
+                            <a href={`http://202.10.40.22:3000/api/export/csv?device=${csvDevice === 'all' ? '' : csvDevice}&days=${csvDays}`} download style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: T.brand, border: 'none', borderRadius: 8, color: '#fff', textDecoration: 'none', fontSize: '0.74rem', fontWeight: 600, fontFamily: T.ui, boxShadow: T.shadow }}>
+                                <Download size={14} /> Unduh CSV
+                            </a>
                         </div>
-                        <a
-                            href={`http://202.10.40.22:3000/api/export/csv?device=${csvDevice === 'all' ? '' : csvDevice}&days=${csvDays}`}
-                            download
-                            style={{
-                                display: 'inline-block', padding: '9px 20px',
-                                background: 'rgba(0,255,130,0.1)', border: '1px solid rgba(0,255,130,0.4)',
-                                borderRadius: 6, color: '#00ff82', textDecoration: 'none',
-                                fontSize: '0.7rem', letterSpacing: '0.1em', fontFamily: '"Courier New", monospace',
-                            }}>
-                            ⬇ Download CSV
-                        </a>
+                        <div style={{ paddingTop: 14, borderTop: `1px solid ${T.border}`, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                            <button onClick={downloadAnalysisCSV} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 7, color: T.text, cursor: 'pointer', fontSize: '0.72rem', fontWeight: 600, fontFamily: T.ui }}><FileDown size={13} /> Analisa real-time (CSV)</button>
+                            <button onClick={downloadHistoryCSV} disabled={!history.length} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 7, color: T.text, cursor: history.length ? 'pointer' : 'not-allowed', fontSize: '0.72rem', fontWeight: 600, fontFamily: T.ui, opacity: history.length ? 1 : 0.5 }}><FileDown size={13} /> Log layar ({history.length})</button>
+                        </div>
                     </div>
 
-                    {/* Clear Database */}
-                    <div style={{ background: 'rgba(255,68,68,0.03)', border: '1px solid rgba(255,68,68,0.2)', borderRadius: 8, padding: 20 }}>
-                        <div style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#ff4444', textTransform: 'uppercase', marginBottom: 8 }}>⚠ Kosongkan Database</div>
-                        <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.3)', marginBottom: 16, letterSpacing: '0.05em', lineHeight: 1.6 }}>
-                            Hapus semua data sensor dari database. Aksi ini tidak bisa dibatalkan.<br/>
-                            Pastikan sudah export CSV sebelum mengosongkan.
+                    {/* Clear DB */}
+                    <div style={{ background: T.panel, border: `1px solid ${tint(C.danger, '30')}`, borderRadius: 12, padding: 22, boxShadow: T.shadow }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <X size={16} color={C.danger} />
+                            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: C.danger }}>Kosongkan Database</span>
                         </div>
+                        <p style={{ margin: '0 0 16px', fontSize: '0.72rem', color: T.textMut, lineHeight: 1.6 }}>Menghapus semua data sensor dari database secara permanen. Pastikan sudah mengekspor CSV sebelum melanjutkan.</p>
                         {dbCount !== null && (
-                            <div style={{ fontSize: '0.7rem', color: 'rgba(255,68,68,0.6)', marginBottom: 12, letterSpacing: '0.1em' }}>
-                                Total data: <strong style={{ color: '#ff4444' }}>{dbCount.toLocaleString()}</strong> rows
-                            </div>
+                            <div style={{ fontSize: '0.72rem', color: C.danger, marginBottom: 12 }}>Total data: <strong>{dbCount.toLocaleString()}</strong> baris</div>
                         )}
-                        <div style={{ display: 'flex', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                             <button onClick={async () => {
-                                try {
-                                    const res = await fetch('http://202.10.40.22:3000/api/db/count').then(r => r.json());
-                                    setDbCount(res.count);
-                                } catch { setManageMsg({ type: 'error', text: 'Gagal ambil jumlah data' }); }
-                            }} style={{ padding: '8px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6, color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace' }}>
-                                🔍 Cek Jumlah Data
-                            </button>
+                                try { const res = await fetch('http://202.10.40.22:3000/api/db/count').then(r => r.json()); setDbCount(res.count); }
+                                catch { setManageMsg({ type: 'error', text: 'Gagal mengambil jumlah data' }); }
+                            }} style={{ padding: '9px 16px', background: T.panelSubtle, border: `1px solid ${T.border}`, borderRadius: 7, color: T.textMut, cursor: 'pointer', fontSize: '0.7rem', fontWeight: 600, fontFamily: T.ui }}>🔍 Cek Jumlah Data</button>
                             <button onClick={async () => {
-                                if (!window.confirm('YAKIN ingin menghapus SEMUA data sensor? Aksi ini tidak bisa dibatalkan!')) return;
-                                if (!window.confirm('Konfirmasi sekali lagi — semua data akan HILANG PERMANEN.')) return;
+                                if (!window.confirm('Yakin menghapus SEMUA data sensor? Aksi ini tidak bisa dibatalkan.')) return;
+                                if (!window.confirm('Konfirmasi sekali lagi — semua data akan hilang permanen.')) return;
                                 setDbDeleting(true);
                                 try {
                                     const res = await fetch('http://202.10.40.22:3000/api/db/clear', { method: 'DELETE' }).then(r => r.json());
-                                    if (res.success) {
-                                        setDbCount(0);
-                                        setManageMsg({ type: 'success', text: `✓ Database dikosongkan. ${res.deleted} rows dihapus.` });
-                                    } else {
-                                        setManageMsg({ type: 'error', text: res.error || 'Gagal hapus' });
-                                    }
+                                    if (res.success) { setDbCount(0); setManageMsg({ type: 'success', text: `Database dikosongkan. ${res.deleted} baris dihapus.` }); }
+                                    else setManageMsg({ type: 'error', text: res.error || 'Gagal menghapus' });
                                 } catch { setManageMsg({ type: 'error', text: 'Koneksi gagal' }); }
                                 setDbDeleting(false);
-                            }} disabled={dbDeleting} style={{ padding: '8px 16px', background: 'rgba(255,68,68,0.1)', border: '1px solid rgba(255,68,68,0.4)', borderRadius: 6, color: '#ff4444', cursor: 'pointer', fontSize: '0.65rem', fontFamily: '"Courier New", monospace', opacity: dbDeleting ? 0.5 : 1 }}>
-                                {dbDeleting ? '⏳ Menghapus...' : '🗑 Kosongkan Database'}
-                            </button>
+                            }} disabled={dbDeleting} style={{ padding: '9px 16px', background: C.danger, border: 'none', borderRadius: 7, color: '#fff', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 600, fontFamily: T.ui, opacity: dbDeleting ? 0.5 : 1 }}>{dbDeleting ? '⏳ Menghapus…' : '🗑 Kosongkan Database'}</button>
                         </div>
                     </div>
-
                 </div>
             )}
 
+            {/* Notifikasi progress unduhan ZIP (global) */}
+            <DownloadProgress state={zipProgress} onClose={() => setZipProgress(null)} />
         </div>
     );
 }
