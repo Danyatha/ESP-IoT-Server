@@ -119,6 +119,7 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
         db.run(`CREATE TABLE IF NOT EXISTS sensor_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             temperature REAL,
+            suhu REAL,
             humidity REAL,
             tds REAL,
             ph REAL,
@@ -148,6 +149,14 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
                         console.log('✅ Kolom pumping berhasil ditambahkan');
                     }
                 });
+                // Migrasi: tambah kolom suhu jika belum ada (untuk database lama)
+                db.run(`ALTER TABLE sensor_data ADD COLUMN suhu REAL`, (alterErr) => {
+                    if (alterErr && !alterErr.message.includes('duplicate column')) {
+                        console.error('❌ Error alter table (suhu):', alterErr);
+                    } else if (!alterErr) {
+                        console.log('✅ Kolom suhu berhasil ditambahkan');
+                    }
+                });
             }
         });
     }
@@ -156,6 +165,7 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
 // ===== WHITELIST FIELD PER DEVICE =====
 const DEVICE_FIELDS = {
     'esp-main':      ['temperature', 'humidity'],
+    'esp-suhu':      ['suhu'],
     'esp-tds':       ['tds'],
     'esp-ph':        ['ph', 'alk', 'temp'],
     'esp-gas':       ['adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio', 'status', 'gas_hint'],
@@ -165,7 +175,7 @@ const DEVICE_FIELDS = {
 
 // Semua kolom yang ada di tabel (selain id, device, timestamp)
 const ALL_FIELDS = [
-    'temperature', 'humidity', 'tds', 'ph', 'alk', 'temp',
+    'temperature', 'suhu', 'humidity', 'tds', 'ph', 'alk', 'temp',
     'adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio',
     'status', 'gas_hint', 'turbidity', 'tss', 'clarity', 'pumping'
 ];
@@ -250,67 +260,74 @@ app.get('/api/latest', (req, res) => {
     getLatestFromDevice('esp-main', (e1, main) => {
         if (e1) return res.status(500).json({ error: e1.message });
 
-        getLatestFromDevice('esp-tds', (e2, tdsRow) => {
+        getLatestFromDevice('esp-suhu', (e2, suhuRow) => {
             if (e2) return res.status(500).json({ error: e2.message });
 
-            getLatestFromDevice('esp-ph', (e3, ph) => {
+            getLatestFromDevice('esp-tds', (e3, tdsRow) => {
                 if (e3) return res.status(500).json({ error: e3.message });
 
-                getLatestFromDevice('esp-gas', (e4, gas) => {
+                getLatestFromDevice('esp-ph', (e4, ph) => {
                     if (e4) return res.status(500).json({ error: e4.message });
 
-                    getLatestFromDevice('esp-turbidity', (e5, turb) => {
+                    getLatestFromDevice('esp-gas', (e5, gas) => {
                         if (e5) return res.status(500).json({ error: e5.message });
 
-                        getLatestFromDevice('esp-pump', (e6, pump) => {
+                        getLatestFromDevice('esp-turbidity', (e6, turb) => {
                             if (e6) return res.status(500).json({ error: e6.message });
 
-                            const deviceAge = {
-                                'esp-main':      ageSeconds(main),
-                                'esp-tds':       ageSeconds(tdsRow),
-                                'esp-ph':        ageSeconds(ph),
-                                'esp-gas':       ageSeconds(gas),
-                                'esp-turbidity': ageSeconds(turb),
-                                'esp-pump':      ageSeconds(pump),
-                            };
+                            getLatestFromDevice('esp-pump', (e7, pump) => {
+                                if (e7) return res.status(500).json({ error: e7.message });
 
-                            res.json({
-                                temperature: main?.temperature ?? null,
-                                humidity:    main?.humidity ?? null,
-                                tds:         tdsRow?.tds ?? null,
-                                ph:          ph?.ph ?? null,
-                                alk:         ph?.alk ?? null,
-                                temp:        ph?.temp ?? null,
+                                const deviceAge = {
+                                    'esp-main':      ageSeconds(main),
+                                    'esp-suhu':      ageSeconds(suhuRow),
+                                    'esp-tds':       ageSeconds(tdsRow),
+                                    'esp-ph':        ageSeconds(ph),
+                                    'esp-gas':       ageSeconds(gas),
+                                    'esp-turbidity': ageSeconds(turb),
+                                    'esp-pump':      ageSeconds(pump),
+                                };
 
-                                gas: gas ? {
-                                    adc_raw:     gas.adc_raw,
-                                    voltage:     gas.voltage,
-                                    baseline_v:  gas.baseline_v,
-                                    rs_ro_ratio: gas.rs_ro_ratio,
-                                    status:      gas.status,
-                                    gas_hint:    gas.gas_hint,
-                                } : null,
+                                res.json({
+                                    temperature: main?.temperature ?? null,
+                                    suhu:        suhuRow?.suhu ?? null,
+                                    humidity:    main?.humidity ?? null,
+                                    tds:         tdsRow?.tds ?? null,
+                                    ph:          ph?.ph ?? null,
+                                    alk:         ph?.alk ?? null,
+                                    temp:        ph?.temp ?? null,
 
-                                turbidity: turb ? {
-                                    turbidity: turb.turbidity,
-                                    tss:       turb.tss,
-                                    clarity:   turb.clarity,
-                                    voltage:   turb.voltage,
-                                } : null,
+                                    gas: gas ? {
+                                        adc_raw:     gas.adc_raw,
+                                        voltage:     gas.voltage,
+                                        baseline_v:  gas.baseline_v,
+                                        rs_ro_ratio: gas.rs_ro_ratio,
+                                        status:      gas.status,
+                                        gas_hint:    gas.gas_hint,
+                                    } : null,
 
-                                pumping: pump?.pumping ?? null,
+                                    turbidity: turb ? {
+                                        turbidity: turb.turbidity,
+                                        tss:       turb.tss,
+                                        clarity:   turb.clarity,
+                                        voltage:   turb.voltage,
+                                    } : null,
 
-                                timestamp: main?.timestamp ?? tdsRow?.timestamp ?? ph?.timestamp ?? gas?.timestamp ?? turb?.timestamp ?? pump?.timestamp ?? null,
+                                    pumping: pump?.pumping ?? null,
 
-                                device_age: deviceAge,
-                                device_names: {
-                                    env:       main      ? 'esp-main'      : null,
-                                    tds:       tdsRow    ? 'esp-tds'       : null,
-                                    water:     ph        ? 'esp-ph'        : null,
-                                    gas:       gas       ? 'esp-gas'       : null,
-                                    turbidity: turb      ? 'esp-turbidity' : null,
-                                    pump:      pump      ? 'esp-pump'      : null,
-                                }
+                                    timestamp: main?.timestamp ?? suhuRow?.timestamp ?? tdsRow?.timestamp ?? ph?.timestamp ?? gas?.timestamp ?? turb?.timestamp ?? pump?.timestamp ?? null,
+
+                                    device_age: deviceAge,
+                                    device_names: {
+                                        env:       main      ? 'esp-main'      : null,
+                                        suhu:      suhuRow   ? 'esp-suhu'      : null,
+                                        tds:       tdsRow    ? 'esp-tds'       : null,
+                                        water:     ph        ? 'esp-ph'        : null,
+                                        gas:       gas       ? 'esp-gas'       : null,
+                                        turbidity: turb      ? 'esp-turbidity' : null,
+                                        pump:      pump      ? 'esp-pump'      : null,
+                                    }
+                                });
                             });
                         });
                     });
@@ -358,28 +375,33 @@ app.get('/api/history', (req, res) => {
     db.all(`SELECT temperature, humidity, timestamp FROM sensor_data WHERE device = 'esp-main' ORDER BY timestamp DESC LIMIT ?`, [limit], (e1, mainRows) => {
         if (e1) return res.status(500).json({ error: e1.message });
 
-        db.all(`SELECT tds, timestamp FROM sensor_data WHERE device = 'esp-tds' ORDER BY timestamp DESC LIMIT ?`, [limit], (e2, tdsRows) => {
+        db.all(`SELECT suhu, timestamp FROM sensor_data WHERE device = 'esp-suhu' ORDER BY timestamp DESC LIMIT ?`, [limit], (e2, suhuRows) => {
             if (e2) return res.status(500).json({ error: e2.message });
 
-            db.all(`SELECT ph, alk, temp, timestamp FROM sensor_data WHERE device = 'esp-ph' ORDER BY timestamp DESC LIMIT ?`, [limit], (e3, phRows) => {
+            db.all(`SELECT tds, timestamp FROM sensor_data WHERE device = 'esp-tds' ORDER BY timestamp DESC LIMIT ?`, [limit], (e3, tdsRows) => {
                 if (e3) return res.status(500).json({ error: e3.message });
 
-                db.all(`SELECT adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint, timestamp FROM sensor_data WHERE device = 'esp-gas' ORDER BY timestamp DESC LIMIT ?`, [limit], (e4, gasRows) => {
+                db.all(`SELECT ph, alk, temp, timestamp FROM sensor_data WHERE device = 'esp-ph' ORDER BY timestamp DESC LIMIT ?`, [limit], (e4, phRows) => {
                     if (e4) return res.status(500).json({ error: e4.message });
 
-                    db.all(`SELECT turbidity, tss, clarity, voltage, timestamp FROM sensor_data WHERE device = 'esp-turbidity' ORDER BY timestamp DESC LIMIT ?`, [limit], (e5, turbRows) => {
+                    db.all(`SELECT adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint, timestamp FROM sensor_data WHERE device = 'esp-gas' ORDER BY timestamp DESC LIMIT ?`, [limit], (e5, gasRows) => {
                         if (e5) return res.status(500).json({ error: e5.message });
 
-                        db.all(`SELECT pumping, timestamp FROM sensor_data WHERE device = 'esp-pump' ORDER BY timestamp DESC LIMIT ?`, [limit], (e6, pumpRows) => {
+                        db.all(`SELECT turbidity, tss, clarity, voltage, timestamp FROM sensor_data WHERE device = 'esp-turbidity' ORDER BY timestamp DESC LIMIT ?`, [limit], (e6, turbRows) => {
                             if (e6) return res.status(500).json({ error: e6.message });
 
-                            res.json({
-                                environment: mainRows,
-                                tds:         tdsRows,
-                                water:       phRows,
-                                gas:         gasRows,
-                                turbidity:   turbRows,
-                                pump:        pumpRows,
+                            db.all(`SELECT pumping, timestamp FROM sensor_data WHERE device = 'esp-pump' ORDER BY timestamp DESC LIMIT ?`, [limit], (e7, pumpRows) => {
+                                if (e7) return res.status(500).json({ error: e7.message });
+
+                                res.json({
+                                    environment: mainRows,
+                                    suhu:        suhuRows,
+                                    tds:         tdsRows,
+                                    water:       phRows,
+                                    gas:         gasRows,
+                                    turbidity:   turbRows,
+                                    pump:        pumpRows,
+                                });
                             });
                         });
                     });
@@ -403,7 +425,7 @@ app.get('/api/export/csv', (req, res) => {
     const device = req.query.device || null;
     const days   = parseInt(req.query.days) || 30;
 
-    let query = `SELECT id, device, timestamp, temperature, humidity, tds, ph, alk, temp,
+    let query = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, ph, alk, temp,
                         adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint,
                         turbidity, tss, clarity, pumping
                  FROM sensor_data
@@ -421,7 +443,7 @@ app.get('/api/export/csv', (req, res) => {
 
         const headers = [
             'id','device','timestamp',
-            'temperature','humidity',
+            'temperature','suhu','humidity',
             'tds','ph','alkalinity','water_temp',
             'adc_raw','voltage','baseline_v','rs_ro_ratio','gas_status','gas_hint',
             'turbidity','tss','clarity','pumping'
@@ -440,7 +462,7 @@ app.get('/api/export/csv', (req, res) => {
         rows.forEach(r => {
             lines.push([
                 r.id, r.device, r.timestamp,
-                r.temperature, r.humidity,
+                r.temperature, r.suhu, r.humidity,
                 r.tds, r.ph, r.alk, r.temp,
                 r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
                 r.turbidity, r.tss, r.clarity, r.pumping

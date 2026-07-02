@@ -34,6 +34,7 @@ const T = {
 };
 const C = {
     roomTemp:  '#c2410c',
+    reactorTemp: '#9333ea',
     humid:     '#0369a1',
     tds:       '#6d28d9',
     ph:        '#0f766e',
@@ -337,9 +338,10 @@ export default function IoTDashboard() {
     const [history, setHistory]                   = useState([]);
     const [connected, setConnected]               = useState(false);
     const [deviceAge, setDeviceAge]               = useState({});
-    const [deviceNames, setDeviceNames]           = useState({ env: null, tds: null, water: null, gas: null, turbidity: null, pump: null });
+    const [deviceNames, setDeviceNames]           = useState({ env: null, suhu: null, tds: null, water: null, gas: null, turbidity: null, pump: null });
 
     const [tempHistory, setTempHistory]           = useState([]);
+    const [suhuHistory, setSuhuHistory]           = useState([]);
     const [humidHistory, setHumidHistory]         = useState([]);
     const [tdsHistory, setTdsHistory]             = useState([]);
     const [phHistory, setPhHistory]               = useState([]);
@@ -385,6 +387,7 @@ export default function IoTDashboard() {
                 if (data) {
                     const newData = {
                         temperature: data.temperature != null ? parseFloat(Number(data.temperature).toFixed(1)) : null,
+                        suhu:        data.suhu        != null ? parseFloat(Number(data.suhu).toFixed(1))        : null,
                         humidity:    data.humidity    != null ? parseFloat(Number(data.humidity).toFixed(1))    : null,
                         tds:         data.tds         != null ? parseFloat(Number(data.tds).toFixed(1))         : null,
                         ph:          data.ph          != null ? parseFloat(Number(data.ph).toFixed(2))          : null,
@@ -403,6 +406,7 @@ export default function IoTDashboard() {
                     setHistory(prev => [...prev, newData].slice(-10));
 
                     if (newData.temperature != null) setTempHistory(prev  => [...prev,  newData.temperature].slice(-MAX_POINTS));
+                    if (newData.suhu         != null) setSuhuHistory(prev => [...prev,  newData.suhu].slice(-MAX_POINTS));
                     if (newData.humidity    != null) setHumidHistory(prev => [...prev,  newData.humidity].slice(-MAX_POINTS));
                     if (newData.tds         != null) setTdsHistory(prev   => [...prev,  newData.tds].slice(-MAX_POINTS));
                     if (newData.ph          != null) setPhHistory(prev    => [...prev,  newData.ph].slice(-MAX_POINTS));
@@ -572,6 +576,7 @@ export default function IoTDashboard() {
     // ── ANALISA: hitung statistik tiap parameter dari riwayat ──
     const analysisRows = useMemo(() => ([
         { key: 'temperature', label: 'Suhu Ruang',  unit: '°C',  color: C.roomTemp,  icon: Thermometer,  data: tempHistory },
+        { key: 'suhu',        label: 'Suhu Reaktor (DS18B20)', unit: '°C', color: C.reactorTemp, icon: Thermometer, data: suhuHistory },
         { key: 'humidity',    label: 'Kelembapan',  unit: '%',   color: C.humid,     icon: Droplets,     data: humidHistory },
         { key: 'tds',         label: 'TDS',         unit: 'ppm', color: C.tds,       icon: Beaker,       data: tdsHistory },
         { key: 'ph',          label: 'pH',          unit: '',    color: C.ph,        icon: FlaskConical, data: phHistory },
@@ -580,7 +585,7 @@ export default function IoTDashboard() {
         { key: 'tss',         label: 'TSS',         unit: 'mg/L',color: C.turb,      icon: Eye,          data: tssHistory },
         { key: 'clarity',     label: 'Kejernihan',  unit: '%',   color: C.ok,        icon: Eye,          data: clarityHistory },
         { key: 'rs_ro',       label: 'Gas Rs/Ro',   unit: '',    color: C.gas,       icon: Wind,         data: rsRoHistory },
-    ].map(r => ({ ...r, stats: analyze(r.data) }))), [tempHistory, humidHistory, tdsHistory, phHistory, waterTempHistory, ntuHistory, tssHistory, clarityHistory, rsRoHistory]);
+    ].map(r => ({ ...r, stats: analyze(r.data) }))), [tempHistory, suhuHistory, humidHistory, tdsHistory, phHistory, waterTempHistory, ntuHistory, tssHistory, clarityHistory, rsRoHistory]);
 
     // ── Download analisa sebagai CSV (sisi klien, tanpa server) ──
     const downloadAnalysisCSV = () => {
@@ -605,11 +610,11 @@ export default function IoTDashboard() {
     // ── Download snapshot riwayat tabel log (CSV, sisi klien) ──
     const downloadHistoryCSV = () => {
         if (!history.length) return;
-        const head = ['Waktu', 'SuhuRuang', 'SuhuAir', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa'];
+        const head = ['Waktu', 'SuhuRuang', 'SuhuReaktor', 'SuhuAir', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa'];
         const lines = [head.join(',')];
         history.forEach(d => {
             lines.push([
-                d.timestamp, d.temperature ?? '', d.waterTemp ?? '', d.humidity ?? '', d.tds ?? '',
+                d.timestamp, d.temperature ?? '', d.suhu ?? '', d.waterTemp ?? '', d.humidity ?? '', d.tds ?? '',
                 d.ph ?? '', d.alkalinity ?? '', d.turbidity ?? '', d.tss ?? '', d.clarity ?? '',
                 d.pumping == null ? '' : (d.pumping === 1 ? 'ON' : 'OFF'),
             ].join(','));
@@ -625,6 +630,8 @@ export default function IoTDashboard() {
     // ── Rentang sumbu Y chart ──
     const tempMin      = tempHistory.length      > 0 ? Math.floor(Math.min(...tempHistory) - 2)      : 20;
     const tempMax      = tempHistory.length      > 0 ? Math.ceil(Math.max(...tempHistory) + 2)        : 40;
+    const suhuMin       = suhuHistory.length      > 0 ? Math.floor(Math.min(...suhuHistory) - 2)      : 20;
+    const suhuMax       = suhuHistory.length      > 0 ? Math.ceil(Math.max(...suhuHistory) + 2)        : 40;
     const humidMin     = humidHistory.length     > 0 ? Math.floor(Math.min(...humidHistory) - 5)     : 30;
     const humidMax     = humidHistory.length     > 0 ? Math.ceil(Math.max(...humidHistory) + 5)       : 90;
     const tdsMin       = tdsHistory.length       > 0 ? Math.floor(Math.min(...tdsHistory) - 20)      : 0;
@@ -714,6 +721,7 @@ export default function IoTDashboard() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
                     <div style={{ display: 'none', flexDirection: 'column', gap: 3, alignItems: 'flex-end' }} className="esp-badges">
                         <EspBadge label={deviceNames.env       ?? 'env'}       ageSeconds={deviceNames.env       ? (deviceAge[deviceNames.env]       ?? null) : null} />
+                        <EspBadge label={deviceNames.suhu      ?? 'suhu'}      ageSeconds={deviceNames.suhu      ? (deviceAge[deviceNames.suhu]      ?? null) : null} />
                         <EspBadge label={deviceNames.tds       ?? 'tds'}       ageSeconds={deviceNames.tds       ? (deviceAge[deviceNames.tds]       ?? null) : null} />
                         <EspBadge label={deviceNames.water     ?? 'water'}     ageSeconds={deviceNames.water     ? (deviceAge[deviceNames.water]     ?? null) : null} />
                         <EspBadge label={deviceNames.gas       ?? 'gas'}       ageSeconds={deviceNames.gas       ? (deviceAge[deviceNames.gas]       ?? null) : null} />
@@ -753,6 +761,13 @@ export default function IoTDashboard() {
                     <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.temperature, '°C', C.roomTemp)}</div>
                     {tempHistory.length === 0 ? waitBox() : <ECGChart data={tempHistory} color={C.roomTemp} min={tempMin} max={tempMax} />}
                     {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${tempMin}° · maks ${tempMax}°`)}
+                </>)}
+
+                {sensorCard(<>
+                    {cardHead(Thermometer, C.reactorTemp, 'Suhu Reaktor · DS18B20', deviceNames.suhu && deviceAge[deviceNames.suhu] >= AGE_OFFLINE && staleTag)}
+                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.suhu, '°C', C.reactorTemp)}</div>
+                    {suhuHistory.length === 0 ? waitBox() : <ECGChart data={suhuHistory} color={C.reactorTemp} min={suhuMin} max={suhuMax} />}
+                    {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${suhuMin}° · maks ${suhuMax}°`)}
                 </>)}
 
                 {sensorCard(<>
@@ -901,7 +916,7 @@ export default function IoTDashboard() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: `1px solid ${T.border}`, background: T.panelSubtle }}>
-                                    {['Waktu', 'Suhu Ruang', 'Suhu Air', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa', 'Status'].map(h => (
+                                    {['Waktu', 'Suhu Ruang', 'Suhu Reaktor', 'Suhu Air', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa', 'Status'].map(h => (
                                         <th key={h} style={{ padding: '9px 14px', textAlign: 'left', color: T.textMut, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
                                     ))}
                                 </tr>
@@ -915,6 +930,7 @@ export default function IoTDashboard() {
                                         <tr key={i} style={{ borderBottom: `1px solid ${T.border}`, background: i === 0 ? tint(T.brand, '08') : 'transparent' }}>
                                             <td style={{ padding: '9px 14px', color: T.textMut, whiteSpace: 'nowrap', fontFamily: T.mono }}>{d.timestamp}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.roomTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.temperature ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: i === 0 ? C.reactorTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.suhu ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.waterTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.waterTemp ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.humid : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.humidity ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.tds : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.tds ?? '--'}</td>
@@ -934,7 +950,7 @@ export default function IoTDashboard() {
                                         </tr>
                                     );
                                 }) : (
-                                    <tr><td colSpan={12} style={{ padding: '28px', textAlign: 'center', color: T.textFaint, fontSize: '0.72rem' }}>Menunggu data dari ESP8266…</td></tr>
+                                    <tr><td colSpan={13} style={{ padding: '28px', textAlign: 'center', color: T.textFaint, fontSize: '0.72rem' }}>Menunggu data dari ESP8266…</td></tr>
                                 )}
                             </tbody>
                         </table>
@@ -1119,7 +1135,8 @@ export default function IoTDashboard() {
                                 <span style={{ fontSize: '0.62rem', color: T.textMut, fontWeight: 600 }}>DEVICE</span>
                                 <select value={csvDevice} onChange={e => setCsvDevice(e.target.value)} style={{ background: T.panel, border: `1px solid ${T.border}`, color: T.text, padding: '8px 10px', borderRadius: 7, fontSize: '0.74rem', fontFamily: T.ui }}>
                                     <option value="all">Semua Device</option>
-                                    <option value="esp-main">esp-main (Suhu/Humidity)</option>
+                                    <option value="esp-main">esp-main (Suhu Ruang/Humidity)</option>
+                                    <option value="esp-suhu">esp-suhu (Suhu Reaktor DS18B20)</option>
                                     <option value="esp-tds">esp-tds (TDS)</option>
                                     <option value="esp-ph">esp-ph (pH)</option>
                                     <option value="esp-gas">esp-gas (Gas)</option>
