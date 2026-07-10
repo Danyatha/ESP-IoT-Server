@@ -10,6 +10,13 @@ const os = require('os');
 const path = require('path');
 const sharp = require('sharp');
 
+// VPS ini RAM-nya kecil (~1GB) — batasi cache internal & concurrency sharp
+// supaya tidak menumpuk memori tiap kali ada foto masuk dari ESP32-CAM.
+// Tanpa ini, libvips (dipakai sharp) bisa cache banyak buffer gambar di
+// memori dan lama-lama bikin proses Node.js OOM (killed oleh kernel).
+sharp.cache(false);       // matikan cache operasi/hasil gambar
+sharp.concurrency(1);     // proses 1 gambar sekaligus, jangan paralel
+
 const app = express();
 const PORT = 3000;
 
@@ -33,9 +40,13 @@ async function addTimestampWatermark(imageBuffer) {
         hour12: false,
     }).replace(/\./g, ':'); // id-ID kadang pakai titik buat jam, samakan jadi ':'
 
+    // 1 instance sharp dipakai ulang (bukan 2 instance terpisah) — lebih hemat
+    // memori, penting untuk VPS dengan RAM kecil.
+    const image = sharp(imageBuffer);
+
     let meta;
     try {
-        meta = await sharp(imageBuffer).metadata();
+        meta = await image.metadata();
     } catch (e) {
         // Kalau bukan gambar valid / gagal dibaca sharp, kembalikan buffer asli apa adanya
         console.error('[watermark] Gagal baca metadata gambar:', e.message);
@@ -61,7 +72,7 @@ async function addTimestampWatermark(imageBuffer) {
     `;
 
     try {
-        return await sharp(imageBuffer)
+        return await image
             .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
             .jpeg({ quality: 90 })
             .toBuffer();
@@ -72,12 +83,29 @@ async function addTimestampWatermark(imageBuffer) {
 }
 
 // POST /cam/upload — terima foto dari ESP32-CAM
+const CAM_MAX_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB — cukup longgar untuk foto ESP32-CAM (biasanya <500KB)
+
 app.post('/cam/upload', (req, res) => {
     const filename = req.headers['x-filename'] || `photo_${Date.now()}.jpg`;
     const filepath = path.join(CAM_UPLOAD_DIR, filename);
     const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
+    let totalBytes = 0;
+    let aborted = false;
+
+    req.on('data', chunk => {
+        totalBytes += chunk.length;
+        if (totalBytes > CAM_MAX_UPLOAD_BYTES && !aborted) {
+            aborted = true;
+            console.error(`[cam-upload] Ditolak: ukuran melebihi ${CAM_MAX_UPLOAD_BYTES} bytes`);
+            res.status(413).json({ success: false, error: 'File terlalu besar' });
+            req.destroy();
+            return;
+        }
+        chunks.push(chunk);
+    });
+
     req.on('end', async () => {
+        if (aborted) return;
         const buf = Buffer.concat(chunks);
         const watermarked = await addTimestampWatermark(buf);
         fs.writeFile(filepath, watermarked, err => {
