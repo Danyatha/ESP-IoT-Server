@@ -425,9 +425,12 @@ app.get('/api/all', (req, res) => {
 
 
 // 7. Export CSV
+const CSV_MAX_DAYS = 365; // batas wajar; cegah query "semua data sejak awal" yang berat
+
 app.get('/api/export/csv', (req, res) => {
     const device = req.query.device || null;
-    const days   = parseInt(req.query.days) || 30;
+    const daysRequested = parseInt(req.query.days) || 30;
+    const days = Math.min(Math.max(daysRequested, 1), CSV_MAX_DAYS);
 
     let query = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, ph, alk, temp,
                         adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint,
@@ -442,43 +445,65 @@ app.get('/api/export/csv', (req, res) => {
     }
     query += ` ORDER BY timestamp ASC`;
 
-    db.all(query, params, (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+    const headers = [
+        'id','device','timestamp',
+        'temperature','suhu','humidity',
+        'tds','ph','alkalinity','water_temp',
+        'adc_raw','voltage','baseline_v','rs_ro_ratio','gas_status','gas_hint',
+        'turbidity','tss','clarity','pumping'
+    ];
 
-        const headers = [
-            'id','device','timestamp',
-            'temperature','suhu','humidity',
-            'tds','ph','alkalinity','water_temp',
-            'adc_raw','voltage','baseline_v','rs_ro_ratio','gas_status','gas_hint',
-            'turbidity','tss','clarity','pumping'
-        ];
+    const escape = (val) => {
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return '"' + str.replace(/"/g, '""') + '"';
+        }
+        return str;
+    };
 
-        const escape = (val) => {
-            if (val === null || val === undefined) return '';
-            const str = String(val);
-            if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-                return '"' + str.replace(/"/g, '""') + '"';
+    const filename = `sensor_data_${device || 'all'}_${new Date().toISOString().slice(0,10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    if (daysRequested > CSV_MAX_DAYS) {
+        console.log(`[csv] days=${daysRequested} melebihi batas, dipangkas jadi ${CSV_MAX_DAYS}`);
+    }
+    res.write(headers.join(',') + '\n');
+
+    let rowCount = 0;
+    let hadError = false;
+
+    // Streaming per baris — hindari load ratusan ribu baris ke memori sekaligus
+    // dan hindari blocking event loop (yang bikin request lain, termasuk dari ESP, ikut lambat)
+    db.each(
+        query,
+        params,
+        (err, r) => {
+            if (err) {
+                if (!hadError) {
+                    hadError = true;
+                    console.error('❌ Error streaming CSV:', err);
+                }
+                return;
             }
-            return str;
-        };
-
-        const lines = [headers.join(',')];
-        rows.forEach(r => {
-            lines.push([
+            const line = [
                 r.id, r.device, r.timestamp,
                 r.temperature, r.suhu, r.humidity,
                 r.tds, r.ph, r.alk, r.temp,
                 r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
                 r.turbidity, r.tss, r.clarity, r.pumping
-            ].map(escape).join(','));
-        });
-
-        const filename = `sensor_data_${device || 'all'}_${new Date().toISOString().slice(0,10)}.csv`;
-        res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        res.send(lines.join('\n'));
-        console.log(`[csv] Export ${rows.length} rows → ${filename}`);
-    });
+            ].map(escape).join(',');
+            res.write(line + '\n');
+            rowCount++;
+        },
+        (err, count) => {
+            if (err && !hadError) {
+                console.error('❌ Error selesai query CSV:', err);
+            }
+            res.end();
+            console.log(`[csv] Export ${rowCount} rows (days=${days}${daysRequested > CSV_MAX_DAYS ? `, diminta ${daysRequested}` : ''}) → ${filename}`);
+        }
+    );
 });
 
 // 6. Delete old data
