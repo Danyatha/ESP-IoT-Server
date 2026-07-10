@@ -295,7 +295,8 @@ app.get('/api/latest', (req, res) => {
                                     tds:         tdsRow?.tds ?? null,
                                     ph:          ph?.ph ?? null,
                                     alk:         ph?.alk ?? null,
-                                    temp:        ph?.temp ?? null,
+                                    // Suhu air berasal dari esp-suhu (DS18B20), bukan dari esp-ph
+                                    temp:        suhuRow?.suhu ?? null,
 
                                     gas: gas ? {
                                         adc_raw:     gas.adc_raw,
@@ -322,7 +323,8 @@ app.get('/api/latest', (req, res) => {
                                         env:       main      ? 'esp-main'      : null,
                                         suhu:      suhuRow   ? 'esp-suhu'      : null,
                                         tds:       tdsRow    ? 'esp-tds'       : null,
-                                        water:     ph        ? 'esp-ph'        : null,
+                                        water:     suhuRow   ? 'esp-suhu'      : null,
+                                        ph:        ph        ? 'esp-ph'        : null,
                                         gas:       gas       ? 'esp-gas'       : null,
                                         turbidity: turb      ? 'esp-turbidity' : null,
                                         pump:      pump      ? 'esp-pump'      : null,
@@ -397,7 +399,8 @@ app.get('/api/history', (req, res) => {
                                     environment: mainRows,
                                     suhu:        suhuRows,
                                     tds:         tdsRows,
-                                    water:       phRows,
+                                    // Suhu air berasal dari esp-suhu (DS18B20), bukan dari esp-ph
+                                    water:       suhuRows,
                                     gas:         gasRows,
                                     turbidity:   turbRows,
                                     pump:        pumpRows,
