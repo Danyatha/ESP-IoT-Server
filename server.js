@@ -165,7 +165,7 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
 // ===== WHITELIST FIELD PER DEVICE =====
 const DEVICE_FIELDS = {
     'esp-main':      ['temperature', 'humidity'],
-    'esp-suhu':      ['suhu'],
+    'esp-suhu':      ['temp'],
     'esp-tds':       ['tds'],
     'esp-ph':        ['ph', 'alk', 'temp'],
     'esp-gas':       ['adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio', 'status', 'gas_hint'],
@@ -290,13 +290,14 @@ app.get('/api/latest', (req, res) => {
 
                                 res.json({
                                     temperature: main?.temperature ?? null,
-                                    suhu:        suhuRow?.suhu ?? null,
+                                    // esp-suhu (DS18B20) mengirim field "temp", bukan "suhu"
+                                    suhu:        suhuRow?.temp ?? null,
                                     humidity:    main?.humidity ?? null,
                                     tds:         tdsRow?.tds ?? null,
                                     ph:          ph?.ph ?? null,
                                     alk:         ph?.alk ?? null,
                                     // Suhu air berasal dari esp-suhu (DS18B20), bukan dari esp-ph
-                                    temp:        suhuRow?.suhu ?? null,
+                                    temp:        suhuRow?.temp ?? null,
 
                                     gas: gas ? {
                                         adc_raw:     gas.adc_raw,
@@ -377,7 +378,7 @@ app.get('/api/history', (req, res) => {
     db.all(`SELECT temperature, humidity, timestamp FROM sensor_data WHERE device = 'esp-main' ORDER BY timestamp DESC LIMIT ?`, [limit], (e1, mainRows) => {
         if (e1) return res.status(500).json({ error: e1.message });
 
-        db.all(`SELECT suhu, timestamp FROM sensor_data WHERE device = 'esp-suhu' ORDER BY timestamp DESC LIMIT ?`, [limit], (e2, suhuRows) => {
+        db.all(`SELECT temp AS suhu, timestamp FROM sensor_data WHERE device = 'esp-suhu' ORDER BY timestamp DESC LIMIT ?`, [limit], (e2, suhuRows) => {
             if (e2) return res.status(500).json({ error: e2.message });
 
             db.all(`SELECT tds, timestamp FROM sensor_data WHERE device = 'esp-tds' ORDER BY timestamp DESC LIMIT ?`, [limit], (e3, tdsRows) => {
