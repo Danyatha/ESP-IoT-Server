@@ -8,6 +8,7 @@ const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const os = require('os');
 const path = require('path');
+const sharp = require('sharp');
 
 const app = express();
 const PORT = 3000;
@@ -23,20 +24,68 @@ if (!fs.existsSync(CAM_UPLOAD_DIR)) fs.mkdirSync(CAM_UPLOAD_DIR, { recursive: tr
 
 console.log(`📷 ESP32-CAM photos dir: ${CAM_UPLOAD_DIR}`);
 
+// ===== WATERMARK TANGGAL/JAM DI FOTO =====
+// Timestamp diambil dari waktu server terima foto (bukan dari ESP32-CAM).
+async function addTimestampWatermark(imageBuffer) {
+    const timestamp = new Date().toLocaleString('id-ID', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+    }).replace(/\./g, ':'); // id-ID kadang pakai titik buat jam, samakan jadi ':'
+
+    let meta;
+    try {
+        meta = await sharp(imageBuffer).metadata();
+    } catch (e) {
+        // Kalau bukan gambar valid / gagal dibaca sharp, kembalikan buffer asli apa adanya
+        console.error('[watermark] Gagal baca metadata gambar:', e.message);
+        return imageBuffer;
+    }
+
+    const width  = meta.width  || 640;
+    const height = meta.height || 480;
+    const fontSize = Math.max(14, Math.round(width * 0.035)); // skala sesuai lebar foto
+    const marginX = Math.round(fontSize * 0.5);
+    const marginY = Math.round(fontSize * 0.5);
+    const textY   = height - marginY;
+
+    const svg = `
+        <svg width="${width}" height="${height}">
+            <style>
+                .wmShadow { fill: black; font-size: ${fontSize}px; font-family: monospace, sans-serif; font-weight: bold; }
+                .wm       { fill: white; font-size: ${fontSize}px; font-family: monospace, sans-serif; font-weight: bold; }
+            </style>
+            <text x="${marginX + 1}" y="${textY + 1}" class="wmShadow">${timestamp}</text>
+            <text x="${marginX}"     y="${textY}"     class="wm">${timestamp}</text>
+        </svg>
+    `;
+
+    try {
+        return await sharp(imageBuffer)
+            .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+            .jpeg({ quality: 90 })
+            .toBuffer();
+    } catch (e) {
+        console.error('[watermark] Gagal proses watermark:', e.message);
+        return imageBuffer; // fallback: simpan foto asli tanpa watermark daripada gagal total
+    }
+}
+
 // POST /cam/upload — terima foto dari ESP32-CAM
 app.post('/cam/upload', (req, res) => {
     const filename = req.headers['x-filename'] || `photo_${Date.now()}.jpg`;
     const filepath = path.join(CAM_UPLOAD_DIR, filename);
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => {
+    req.on('end', async () => {
         const buf = Buffer.concat(chunks);
-        fs.writeFile(filepath, buf, err => {
+        const watermarked = await addTimestampWatermark(buf);
+        fs.writeFile(filepath, watermarked, err => {
             if (err) {
                 console.error('[cam-upload] Error:', err.message);
                 return res.status(500).json({ success: false, error: err.message });
             }
-            console.log(`[cam-upload] Tersimpan: ${filename} (${buf.length} bytes)`);
+            console.log(`[cam-upload] Tersimpan: ${filename} (${watermarked.length} bytes, watermark ✓)`);
             res.json({ success: true, filename });
         });
     });
