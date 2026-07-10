@@ -502,25 +502,34 @@ app.get('/api/all', (req, res) => {
 
 
 // 7. Export CSV
-const CSV_MAX_DAYS = 365; // batas wajar; cegah query "semua data sejak awal" yang berat
+const CSV_MAX_DAYS = 365;   // batas wajar; cegah query "semua data sejak awal" yang berat
+const CSV_BATCH_SIZE = 500; // jumlah baris per batch — cukup kecil supaya tidak numpuk di memori,
+                             // cukup besar supaya query tidak dipanggil berlebihan
 
 app.get('/api/export/csv', (req, res) => {
     const device = req.query.device || null;
     const daysRequested = parseInt(req.query.days) || 30;
     const days = Math.min(Math.max(daysRequested, 1), CSV_MAX_DAYS);
 
-    let query = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, ph, alk, temp,
+    // Keyset pagination (WHERE id > ?) dipakai alih-alih OFFSET.
+    // OFFSET di SQLite harus menghitung ulang & melompati N baris dari awal
+    // setiap kali dipanggil — makin besar offset-nya, makin lambat. Untuk
+    // ratusan ribu baris ini jadi sangat lambat (tiap batch makin lama).
+    // Keyset pagination (lanjut dari id terakhir yang sudah dibaca) bisa
+    // memakai index PRIMARY KEY langsung, jadi kecepatannya konsisten dari
+    // batch pertama sampai terakhir.
+    let baseQuery = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, ph, alk, temp,
                         adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint,
                         turbidity, tss, clarity, pumping
                  FROM sensor_data
-                 WHERE timestamp >= datetime('now', ?)`;
-    const params = [`-${days} days`];
+                 WHERE timestamp >= datetime('now', ?) AND id > ?`;
+    const baseParams = [`-${days} days`];
 
     if (device) {
-        query += ` AND device = ?`;
-        params.push(device);
+        baseQuery += ` AND device = ?`;
+        baseParams.push(device);
     }
-    query += ` ORDER BY timestamp ASC`;
+    baseQuery += ` ORDER BY id ASC LIMIT ?`;
 
     const headers = [
         'id','device','timestamp',
@@ -545,42 +554,89 @@ app.get('/api/export/csv', (req, res) => {
     if (daysRequested > CSV_MAX_DAYS) {
         console.log(`[csv] days=${daysRequested} melebihi batas, dipangkas jadi ${CSV_MAX_DAYS}`);
     }
-    res.write(headers.join(',') + '\n');
+
+    // Helper: tunggu event 'drain' sebelum lanjut nulis, kalau buffer response penuh.
+    // Ini backpressure yang SEBENARNYA berfungsi — sqlite3 package tidak punya
+    // db.pause()/db.resume() (itu API dari library database lain seperti mysql),
+    // jadi kita kontrol manual di sisi kita: baca 1 batch dari DB, tulis ke
+    // response, TUNGGU sampai batch itu benar-benar terkirim baru baca batch
+    // berikutnya. Ini mencegah data menumpuk di buffer memori Node.js seperti
+    // yang menyebabkan crash 'FatalProcessOutOfMemory' sebelumnya.
+    //
+    // PENTING: listener 'drain'/'error' dibersihkan (removeListener) setelah
+    // dipakai — dipanggil ratusan/ribuan kali per-export, kalau tidak
+    // dibersihkan akan memicu MaxListenersExceededWarning dan membebani memori.
+    function writeAndWaitDrain(chunk) {
+        return new Promise((resolve, reject) => {
+            const ok = res.write(chunk, (err) => {
+                if (err) reject(err);
+            });
+            if (ok) {
+                resolve();
+            } else {
+                const onDrain = () => { cleanup(); resolve(); };
+                const onError = (err) => { cleanup(); reject(err); };
+                const cleanup = () => {
+                    res.removeListener('drain', onDrain);
+                    res.removeListener('error', onError);
+                };
+                res.once('drain', onDrain);
+                res.once('error', onError);
+            }
+        });
+    }
+
+    function fetchBatch(lastId) {
+        return new Promise((resolve, reject) => {
+            db.all(baseQuery, [...baseParams, lastId, CSV_BATCH_SIZE], (err, rows) => {
+                if (err) return reject(err);
+                resolve(rows);
+            });
+        });
+    }
 
     let rowCount = 0;
-    let hadError = false;
+    let clientAborted = false;
+    req.on('close', () => { clientAborted = true; });
 
-    // Streaming per baris — hindari load ratusan ribu baris ke memori sekaligus
-    // dan hindari blocking event loop (yang bikin request lain, termasuk dari ESP, ikut lambat)
-    db.each(
-        query,
-        params,
-        (err, r) => {
-            if (err) {
-                if (!hadError) {
-                    hadError = true;
-                    console.error('❌ Error streaming CSV:', err);
+    (async () => {
+        try {
+            await writeAndWaitDrain(headers.join(',') + '\n');
+
+            let lastId = 0;
+            while (!clientAborted) {
+                const rows = await fetchBatch(lastId);
+                if (rows.length === 0) break;
+
+                let batchText = '';
+                for (const r of rows) {
+                    batchText += [
+                        r.id, r.device, r.timestamp,
+                        r.temperature, r.suhu, r.humidity,
+                        r.tds, r.ph, r.alk, r.temp,
+                        r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
+                        r.turbidity, r.tss, r.clarity, r.pumping
+                    ].map(escape).join(',') + '\n';
                 }
-                return;
+                await writeAndWaitDrain(batchText);
+
+                rowCount += rows.length;
+                lastId = rows[rows.length - 1].id;
+
+                if (rows.length < CSV_BATCH_SIZE) break; // batch terakhir, sudah habis
             }
-            const line = [
-                r.id, r.device, r.timestamp,
-                r.temperature, r.suhu, r.humidity,
-                r.tds, r.ph, r.alk, r.temp,
-                r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
-                r.turbidity, r.tss, r.clarity, r.pumping
-            ].map(escape).join(',');
-            res.write(line + '\n');
-            rowCount++;
-        },
-        (err, count) => {
-            if (err && !hadError) {
-                console.error('❌ Error selesai query CSV:', err);
-            }
+
             res.end();
-            console.log(`[csv] Export ${rowCount} rows (days=${days}${daysRequested > CSV_MAX_DAYS ? `, diminta ${daysRequested}` : ''}) → ${filename}`);
+            console.log(`[csv] Export ${rowCount} rows (days=${days}${daysRequested > CSV_MAX_DAYS ? `, diminta ${daysRequested}` : ''}) → ${filename}${clientAborted ? ' [klien putus di tengah]' : ''}`);
+        } catch (err) {
+            console.error('❌ Error export CSV:', err.message);
+            if (!res.headersSent) {
+                res.status(500).json({ error: err.message });
+            } else {
+                res.end();
+            }
         }
-    );
+    })();
 });
 
 // 6. Delete old data
