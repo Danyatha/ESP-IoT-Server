@@ -344,6 +344,7 @@ export default function IoTDashboard() {
     const [suhuHistory, setSuhuHistory]           = useState([]);
     const [humidHistory, setHumidHistory]         = useState([]);
     const [tdsHistory, setTdsHistory]             = useState([]);
+    const [voltageTdsHistory, setVoltageTdsHistory] = useState([]);
     const [phHistory, setPhHistory]               = useState([]);
     const [gasData, setGasData]                   = useState(null);
     const [rsRoHistory, setRsRoHistory]           = useState([]);
@@ -389,6 +390,7 @@ export default function IoTDashboard() {
                         suhu:        data.suhu        != null ? parseFloat(Number(data.suhu).toFixed(1))        : null,
                         humidity:    data.humidity    != null ? parseFloat(Number(data.humidity).toFixed(1))    : null,
                         tds:         data.tds         != null ? parseFloat(Number(data.tds).toFixed(1))         : null,
+                        voltage_tds: data.voltage_tds  != null ? parseFloat(Number(data.voltage_tds).toFixed(4)) : null,
                         ph:          data.ph          != null ? parseFloat(Number(data.ph).toFixed(2))          : null,
                         alkalinity:  data.alk         != null ? parseFloat(Number(data.alk).toFixed(0))         : null,
                         turbidity:   data.turbidity?.turbidity != null ? parseFloat(Number(data.turbidity.turbidity).toFixed(2)) : null,
@@ -407,6 +409,7 @@ export default function IoTDashboard() {
                     if (newData.suhu         != null) setSuhuHistory(prev => [...prev,  newData.suhu].slice(-MAX_POINTS));
                     if (newData.humidity    != null) setHumidHistory(prev => [...prev,  newData.humidity].slice(-MAX_POINTS));
                     if (newData.tds         != null) setTdsHistory(prev   => [...prev,  newData.tds].slice(-MAX_POINTS));
+                    if (newData.voltage_tds != null) setVoltageTdsHistory(prev => [...prev, newData.voltage_tds].slice(-MAX_POINTS));
                     if (newData.ph          != null) setPhHistory(prev    => [...prev,  newData.ph].slice(-MAX_POINTS));
                     if (newData.turbidity   != null) setNtuHistory(prev   => [...prev,  newData.turbidity].slice(-MAX_POINTS));
                     if (newData.clarity     != null) setClarityHistory(prev => [...prev, newData.clarity].slice(-MAX_POINTS));
@@ -576,12 +579,13 @@ export default function IoTDashboard() {
         { key: 'suhu',        label: 'Suhu Air (DS18B20)', unit: '°C', color: C.waterTemp, icon: Waves, data: suhuHistory },
         { key: 'humidity',    label: 'Kelembapan',  unit: '%',   color: C.humid,     icon: Droplets,     data: humidHistory },
         { key: 'tds',         label: 'TDS',         unit: 'ppm', color: C.tds,       icon: Beaker,       data: tdsHistory },
+        { key: 'voltage_tds', label: 'Voltage TDS', unit: 'V',   color: C.tds,       icon: Zap,          data: voltageTdsHistory },
         { key: 'ph',          label: 'pH',          unit: '',    color: C.ph,        icon: FlaskConical, data: phHistory },
         { key: 'turbidity',   label: 'Turbiditas',  unit: 'NTU', color: C.turb,      icon: Eye,          data: ntuHistory },
         { key: 'tss',         label: 'TSS',         unit: 'mg/L',color: C.turb,      icon: Eye,          data: tssHistory },
         { key: 'clarity',     label: 'Kejernihan',  unit: '%',   color: C.ok,        icon: Eye,          data: clarityHistory },
         { key: 'rs_ro',       label: 'Gas Rs/Ro',   unit: '',    color: C.gas,       icon: Wind,         data: rsRoHistory },
-    ].map(r => ({ ...r, stats: analyze(r.data) }))), [tempHistory, suhuHistory, humidHistory, tdsHistory, phHistory, ntuHistory, tssHistory, clarityHistory, rsRoHistory]);
+    ].map(r => ({ ...r, stats: analyze(r.data) }))), [tempHistory, suhuHistory, humidHistory, tdsHistory, voltageTdsHistory, phHistory, ntuHistory, tssHistory, clarityHistory, rsRoHistory]);
 
     // ── Download analisa sebagai CSV (sisi klien, tanpa server) ──
     const downloadAnalysisCSV = () => {
@@ -606,11 +610,11 @@ export default function IoTDashboard() {
     // ── Download snapshot riwayat tabel log (CSV, sisi klien) ──
     const downloadHistoryCSV = () => {
         if (!history.length) return;
-        const head = ['Waktu', 'SuhuRuang', 'SuhuAir', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa'];
+        const head = ['Waktu', 'SuhuRuang', 'SuhuAir', 'Kelembapan', 'TDS', 'VoltageTDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa'];
         const lines = [head.join(',')];
         history.forEach(d => {
             lines.push([
-                d.timestamp, d.temperature ?? '', d.suhu ?? '', d.humidity ?? '', d.tds ?? '',
+                d.timestamp, d.temperature ?? '', d.suhu ?? '', d.humidity ?? '', d.tds ?? '', d.voltage_tds ?? '',
                 d.ph ?? '', d.alkalinity ?? '', d.turbidity ?? '', d.tss ?? '', d.clarity ?? '',
                 d.pumping == null ? '' : (d.pumping === 1 ? 'ON' : 'OFF'),
             ].join(','));
@@ -772,8 +776,17 @@ export default function IoTDashboard() {
                 </>)}
 
                 {sensorCard(<>
-                    {cardHead(Beaker, C.tds, 'TDS', deviceNames.tds && deviceAge[deviceNames.tds] >= AGE_OFFLINE && staleTag)}
-                    <div style={{ textAlign: 'right', marginTop: -38, marginBottom: 8 }}>{bigVal(latestData?.tds, 'ppm', C.tds)}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                            <div style={{ width: 30, height: 30, borderRadius: 8, background: tint(C.tds, '14'), display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Beaker size={16} color={C.tds} /></div>
+                            <span style={{ fontSize: '0.74rem', letterSpacing: '0.04em', color: T.text, fontWeight: 600 }}>TDS</span>
+                            {deviceNames.tds && deviceAge[deviceNames.tds] >= AGE_OFFLINE && staleTag}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
+                            {bigVal(latestData?.tds, 'ppm', C.tds)}
+                            {latestData?.voltage_tds != null && <span style={{ fontSize: '0.68rem', color: T.textMut }}>V: {latestData.voltage_tds.toFixed(3)} V</span>}
+                        </div>
+                    </div>
                     {tdsHistory.length === 0 ? waitBox() : <ECGChart data={tdsHistory} color={C.tds} min={tdsMin} max={tdsMax} />}
                     {footRange(`${MAX_POINTS} pembacaan terakhir`, `min ${tdsMin} · maks ${tdsMax} ppm`)}
                 </>)}
@@ -903,7 +916,7 @@ export default function IoTDashboard() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
                             <thead>
                                 <tr style={{ borderBottom: `1px solid ${T.border}`, background: T.panelSubtle }}>
-                                    {['Waktu', 'Suhu Ruang', 'Suhu Air', 'Kelembapan', 'TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa', 'Status'].map(h => (
+                                    {['Waktu', 'Suhu Ruang', 'Suhu Air', 'Kelembapan', 'TDS', 'V TDS', 'pH', 'Alkalinitas', 'Turbidity', 'TSS', 'Clarity', 'Pompa', 'Status'].map(h => (
                                         <th key={h} style={{ padding: '9px 14px', textAlign: 'left', color: T.textMut, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
                                     ))}
                                 </tr>
@@ -920,6 +933,7 @@ export default function IoTDashboard() {
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.waterTemp : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.suhu ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.humid : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.humidity ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.tds : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.tds ?? '--'}</td>
+                                            <td style={{ padding: '9px 14px', color: T.textMut, fontFamily: T.mono }}>{d.voltage_tds != null ? d.voltage_tds.toFixed(3) : '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.ph : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.ph ?? '--'}</td>
                                             <td style={{ padding: '9px 14px', color: T.textMut, fontFamily: T.mono }}>{d.alkalinity != null ? `${d.alkalinity}` : '--'}</td>
                                             <td style={{ padding: '9px 14px', color: i === 0 ? C.turb : T.textMut, fontWeight: i === 0 ? 700 : 400, fontFamily: T.mono }}>{d.turbidity ?? '--'}</td>

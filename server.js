@@ -199,6 +199,7 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
             suhu REAL,
             humidity REAL,
             tds REAL,
+            voltage_tds REAL,
             ph REAL,
             alk REAL,
             temp REAL,
@@ -234,6 +235,14 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
                         console.log('✅ Kolom suhu berhasil ditambahkan');
                     }
                 });
+                // Migrasi: tambah kolom voltage_tds jika belum ada (untuk database lama)
+                db.run(`ALTER TABLE sensor_data ADD COLUMN voltage_tds REAL`, (alterErr) => {
+                    if (alterErr && !alterErr.message.includes('duplicate column')) {
+                        console.error('❌ Error alter table (voltage_tds):', alterErr);
+                    } else if (!alterErr) {
+                        console.log('✅ Kolom voltage_tds berhasil ditambahkan');
+                    }
+                });
             }
         });
     }
@@ -243,7 +252,7 @@ const db = new sqlite3.Database('./iot_data.db', (err) => {
 const DEVICE_FIELDS = {
     'esp-main':      ['temperature', 'humidity'],
     'esp-suhu':      ['temp'],
-    'esp-tds':       ['tds'],
+    'esp-tds':       ['tds', 'voltage_tds'],
     'esp-ph':        ['ph', 'alk', 'temp'],
     'esp-gas':       ['adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio', 'status', 'gas_hint'],
     'esp-turbidity': ['turbidity', 'tss', 'clarity', 'voltage'],
@@ -252,7 +261,7 @@ const DEVICE_FIELDS = {
 
 // Semua kolom yang ada di tabel (selain id, device, timestamp)
 const ALL_FIELDS = [
-    'temperature', 'suhu', 'humidity', 'tds', 'ph', 'alk', 'temp',
+    'temperature', 'suhu', 'humidity', 'tds', 'voltage_tds', 'ph', 'alk', 'temp',
     'adc_raw', 'voltage', 'baseline_v', 'rs_ro_ratio',
     'status', 'gas_hint', 'turbidity', 'tss', 'clarity', 'pumping'
 ];
@@ -371,6 +380,7 @@ app.get('/api/latest', (req, res) => {
                                     suhu:        suhuRow?.temp ?? null,
                                     humidity:    main?.humidity ?? null,
                                     tds:         tdsRow?.tds ?? null,
+                                    voltage_tds: tdsRow?.voltage_tds ?? null,
                                     ph:          ph?.ph ?? null,
                                     alk:         ph?.alk ?? null,
                                     // Suhu air berasal dari esp-suhu (DS18B20), bukan dari esp-ph
@@ -458,7 +468,7 @@ app.get('/api/history', (req, res) => {
         db.all(`SELECT temp AS suhu, timestamp FROM sensor_data WHERE device = 'esp-suhu' ORDER BY timestamp DESC LIMIT ?`, [limit], (e2, suhuRows) => {
             if (e2) return res.status(500).json({ error: e2.message });
 
-            db.all(`SELECT tds, timestamp FROM sensor_data WHERE device = 'esp-tds' ORDER BY timestamp DESC LIMIT ?`, [limit], (e3, tdsRows) => {
+            db.all(`SELECT tds, voltage_tds, timestamp FROM sensor_data WHERE device = 'esp-tds' ORDER BY timestamp DESC LIMIT ?`, [limit], (e3, tdsRows) => {
                 if (e3) return res.status(500).json({ error: e3.message });
 
                 db.all(`SELECT ph, alk, temp, timestamp FROM sensor_data WHERE device = 'esp-ph' ORDER BY timestamp DESC LIMIT ?`, [limit], (e4, phRows) => {
@@ -500,11 +510,9 @@ app.get('/api/all', (req, res) => {
     });
 });
 
-
 // 7. Export CSV
 const CSV_MAX_DAYS = 365;   // batas wajar; cegah query "semua data sejak awal" yang berat
 const CSV_BATCH_SIZE = 500; // jumlah baris per batch — cukup kecil supaya tidak numpuk di memori,
-                             // cukup besar supaya query tidak dipanggil berlebihan
 
 app.get('/api/export/csv', (req, res) => {
     const device = req.query.device || null;
@@ -518,7 +526,7 @@ app.get('/api/export/csv', (req, res) => {
     // Keyset pagination (lanjut dari id terakhir yang sudah dibaca) bisa
     // memakai index PRIMARY KEY langsung, jadi kecepatannya konsisten dari
     // batch pertama sampai terakhir.
-    let baseQuery = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, ph, alk, temp,
+    let baseQuery = `SELECT id, device, timestamp, temperature, suhu, humidity, tds, voltage_tds, ph, alk, temp,
                         adc_raw, voltage, baseline_v, rs_ro_ratio, status, gas_hint,
                         turbidity, tss, clarity, pumping
                  FROM sensor_data
@@ -534,7 +542,7 @@ app.get('/api/export/csv', (req, res) => {
     const headers = [
         'id','device','timestamp',
         'temperature','suhu','humidity',
-        'tds','ph','alkalinity','water_temp',
+        'tds','voltage_tds','ph','alkalinity','water_temp',
         'adc_raw','voltage','baseline_v','rs_ro_ratio','gas_status','gas_hint',
         'turbidity','tss','clarity','pumping'
     ];
@@ -555,17 +563,6 @@ app.get('/api/export/csv', (req, res) => {
         console.log(`[csv] days=${daysRequested} melebihi batas, dipangkas jadi ${CSV_MAX_DAYS}`);
     }
 
-    // Helper: tunggu event 'drain' sebelum lanjut nulis, kalau buffer response penuh.
-    // Ini backpressure yang SEBENARNYA berfungsi — sqlite3 package tidak punya
-    // db.pause()/db.resume() (itu API dari library database lain seperti mysql),
-    // jadi kita kontrol manual di sisi kita: baca 1 batch dari DB, tulis ke
-    // response, TUNGGU sampai batch itu benar-benar terkirim baru baca batch
-    // berikutnya. Ini mencegah data menumpuk di buffer memori Node.js seperti
-    // yang menyebabkan crash 'FatalProcessOutOfMemory' sebelumnya.
-    //
-    // PENTING: listener 'drain'/'error' dibersihkan (removeListener) setelah
-    // dipakai — dipanggil ratusan/ribuan kali per-export, kalau tidak
-    // dibersihkan akan memicu MaxListenersExceededWarning dan membebani memori.
     function writeAndWaitDrain(chunk) {
         return new Promise((resolve, reject) => {
             const ok = res.write(chunk, (err) => {
@@ -613,7 +610,7 @@ app.get('/api/export/csv', (req, res) => {
                     batchText += [
                         r.id, r.device, r.timestamp,
                         r.temperature, r.suhu, r.humidity,
-                        r.tds, r.ph, r.alk, r.temp,
+                        r.tds, r.voltage_tds, r.ph, r.alk, r.temp,
                         r.adc_raw, r.voltage, r.baseline_v, r.rs_ro_ratio, r.status, r.gas_hint,
                         r.turbidity, r.tss, r.clarity, r.pumping
                     ].map(escape).join(',') + '\n';

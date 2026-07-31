@@ -4,7 +4,7 @@ module.exports = function(app) {
     app.use(
         ['/api', '/cam'],
         createProxyMiddleware({
-            target: 'http://202.10.40.22:3000',
+            target: 'http://localhost:3000',
             changeOrigin: true,
             proxyTimeout: 20000,
             timeout: 20000,
@@ -14,7 +14,7 @@ module.exports = function(app) {
                     res.status(502).json({ error: err.message });
                 },
                 proxyReq: (proxyReq, req) => {
-                    console.log('[PROXY]', req.method, req.url, '→ 202.10.40.22:3000');
+                    console.log('[PROXY]', req.method, req.url, '→ localhost:3000');
                 },
             },
         })
